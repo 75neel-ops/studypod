@@ -218,3 +218,45 @@ def suggest_chapters(class_name: str, board: str, subject: str) -> list[str]:
         return generated or offline_chapters
     except Exception:
         return offline_chapters
+
+
+
+def rebalance_schedule(schedule: list[dict[str, Any]], backlog_hours: float,
+                       after_date: str) -> tuple[list[dict[str, Any]], float]:
+    """Redistribute missed study time across future days without exceeding declared availability."""
+    revised = [dict(day) for day in schedule]
+    future = [
+        day for day in revised
+        if str(day.get("date", "")) > after_date
+        and float(day.get("available_hours", 0) or 0) > 0
+    ]
+    remaining = max(0.0, float(backlog_hours))
+    spare_total = sum(
+        max(0.0, float(day.get("available_hours", 0) or 0)
+            - float(day.get("planned_hours", 0) or 0))
+        for day in future
+    )
+    allocatable = min(remaining, spare_total)
+    if allocatable > 0 and spare_total > 0:
+        for index, day in enumerate(future):
+            spare = max(
+                0.0,
+                float(day.get("available_hours", 0) or 0)
+                - float(day.get("planned_hours", 0) or 0),
+            )
+            if spare <= 0:
+                continue
+            # Allocate proportionally, leaving rounding remainder for the final eligible day.
+            addition = min(spare, allocatable * spare / spare_total)
+            day["planned_hours"] = round(float(day.get("planned_hours", 0) or 0) + addition, 2)
+            day["focus"] = ("Catch-up + " + str(day.get("focus", "")))[:220]
+        # Correct any small rounding remainder while respecting each day's declared capacity.
+        revised_by_date = {str(day.get("date")): day for day in revised}
+        actual_added = sum(
+            max(0.0, float(day.get("planned_hours", 0) or 0)
+                - float(next((x.get("planned_hours", 0) for x in schedule
+                              if x.get("date") == day.get("date")), 0) or 0))
+            for day in future
+        )
+        remaining = max(0.0, remaining - actual_added)
+    return revised, round(remaining, 2)
