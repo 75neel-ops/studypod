@@ -33,6 +33,8 @@ def mongo_resources():
     database.confidence.create_index(
         [("milestone_id", ASCENDING), ("username", ASCENDING), ("chapter", ASCENDING)], unique=True
     )
+    database.learner_plans.create_index([("pod_id", ASCENDING), ("username", ASCENDING)], unique=True)
+    database.task_progress.create_index([("pod_id", ASCENDING), ("username", ASCENDING), ("date", ASCENDING)], unique=True)
     return client, database, GridFSBucket(database, bucket_name="studypod_uploads")
 
 
@@ -223,6 +225,39 @@ def create_milestones(pod_id, plan: list[dict[str, Any]]) -> None:
             upsert=True,
         )
 
+
+
+def get_learner_plan(pod_id, username: str) -> dict[str, Any] | None:
+    return get_db().learner_plans.find_one({"pod_id": pod_id, "username": username})
+
+
+def save_learner_plan(pod_id, username: str, schedule: list[dict[str, Any]]) -> None:
+    get_db().learner_plans.update_one(
+        {"pod_id": pod_id, "username": username},
+        {"$set": {"schedule": schedule, "updated_at": utcnow()},
+         "$setOnInsert": {"pod_id": pod_id, "username": username, "created_at": utcnow()}},
+        upsert=True,
+    )
+
+
+def get_task_progress(pod_id, username: str) -> list[dict[str, Any]]:
+    return list(get_db().task_progress.find(
+        {"pod_id": pod_id, "username": username}
+    ).sort("date", 1))
+
+
+def save_task_progress(pod_id, username: str, task_date: str,
+                       status: str, hours_spent: float, note: str = "") -> None:
+    get_db().task_progress.update_one(
+        {"pod_id": pod_id, "username": username, "date": task_date},
+        {"$set": {
+            "status": status,
+            "hours_spent": max(0.0, min(24.0, float(hours_spent))),
+            "note": note[:500],
+            "updated_at": utcnow(),
+        }, "$setOnInsert": {"pod_id": pod_id, "username": username, "date": task_date}},
+        upsert=True,
+    )
 
 def member_count(pod_id) -> int:
     return get_db().members.count_documents({"pod_id": pod_id})
