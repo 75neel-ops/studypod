@@ -199,44 +199,51 @@ def create_pod_ui(user):
     with subject_col:
         subject = st.selectbox("Subject", subjects_for(class_name, board), key="new_subject")
 
+    catalogue_context = f"{class_name}|{board}|{subject}"
+    if st.session_state.get("chapter_catalogue_context") != catalogue_context:
+        st.session_state.suggested_chapters = []
+        st.session_state.selected_exam_chapters = []
+        st.session_state.chapter_catalogue_context = catalogue_context
+
     suggest_col, clear_col = st.columns([1, 1])
     with suggest_col:
-        if st.button("✨ Suggest chapters with Gemini", key="suggest_chapters"):
-            with st.spinner("Checking likely chapter names..."):
+        if st.button("📚 Load chapter list", key="suggest_chapters"):
+            with st.spinner("Preparing the chapter list for your selected class and subject..."):
                 suggestions = suggest_chapters(class_name, board, subject)
             if suggestions:
                 st.session_state.suggested_chapters = suggestions
-                st.session_state.pop("chapter_catalogue", None)
-                st.session_state.pop("selected_exam_chapters", None)
-                st.success("Chapter suggestions are ready. Please verify them against your current official syllabus.")
+                st.session_state.selected_exam_chapters = []
+                st.success("Chapter list loaded. Now choose the chapters included in your examination.")
             else:
-                st.info("Gemini chapter suggestions are unavailable. You can enter chapters manually.")
+                st.warning("The chapter list could not be loaded. Check that your Gemini API key is configured, or add chapters manually below.")
     with clear_col:
-        if st.button("Clear suggestions", key="clear_suggestions"):
+        if st.button("Clear chapter list", key="clear_suggestions"):
             st.session_state.suggested_chapters = []
-            st.session_state.pop("chapter_catalogue", None)
-            st.session_state.pop("selected_exam_chapters", None)
+            st.session_state.selected_exam_chapters = []
+            st.rerun()
 
     suggestions = st.session_state.get("suggested_chapters", [])
     if suggestions:
-        st.write("Suggested chapters (edit the list if needed):")
-    initial_chapters = "\n".join(suggestions)
-    chapters_text = st.text_area(
-        "Chapter catalogue (one chapter per line)",
-        value=initial_chapters,
-        height=140,
-        key="chapter_catalogue",
-        help="Use Gemini suggestions or enter your syllabus chapters manually. The list updates as you type.",
-    )
-    chapter_options = list(dict.fromkeys(x.strip() for x in chapters_text.splitlines() if x.strip()))
-    selected_chapters = st.multiselect(
-        "Select all chapters included in this examination",
-        options=chapter_options,
-        default=chapter_options,
-        key="selected_exam_chapters",
-        help="Select multiple chapters. Remove any chapters that are not part of this examination.",
-    )
-    st.caption(f"{len(selected_chapters)} chapter(s) selected for the study plan.")
+        selected_chapters = st.multiselect(
+            "Choose the chapters for this examination",
+            options=suggestions,
+            default=st.session_state.get("selected_exam_chapters", []),
+            key="selected_exam_chapters",
+            placeholder="Click here and select one or more chapters",
+            help="You can select all the chapters you need. Click the box again to add more.",
+        )
+        st.caption(f"{len(selected_chapters)} chapter(s) selected.")
+    else:
+        selected_chapters = []
+        st.info("First click **Load chapter list**. You will then be able to select chapters from a dropdown.")
+    with st.expander("➕ Add a chapter manually (if it is missing from the list)"):
+        extra_chapters_text = st.text_area(
+            "Additional chapter names (one per line)",
+            height=90,
+            key="extra_chapter_names",
+            placeholder="Only use this if a chapter is missing from the suggested list.",
+        )
+        extra_chapters = [x.strip() for x in extra_chapters_text.splitlines() if x.strip()]
 
     with st.form("create_pod_form"):
         pod_name = st.text_input("Pod name", placeholder="e.g. Class 10 Maths Sprint")
@@ -261,12 +268,15 @@ def create_pod_ui(user):
         submitted = st.form_submit_button("Create my StudyPod and sprint", type="primary", use_container_width=True)
 
     if submitted:
-        chapters = list(dict.fromkeys(x.strip() for x in selected_chapters if x.strip()))
+        chapters = list(dict.fromkeys(
+            [x.strip() for x in selected_chapters if x.strip()]
+            + [x.strip() for x in extra_chapters if x.strip()]
+        ))
         if not pod_name.strip():
             st.error("Please enter a pod name.")
             return
         if not chapters or len(chapters) > 30:
-            st.error("Enter between 1 and 30 chapters, one per line.")
+            st.error("Please select at least one chapter from the dropdown or add one manually. A maximum of 30 chapters is allowed.")
             return
         existing = db.get_user_pods(user["username"])
         duplicate = next((
