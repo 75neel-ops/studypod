@@ -1,0 +1,8 @@
+streamlit>=1.41,<2
+pymongo[srv]>=4.10,<5
+dnspython>=2.6
+google-genai>=1.0
+pydantic>=2.8
+bcrypt>=4.2
+razorpay>=1.4
+python-dateutil>=2.9
