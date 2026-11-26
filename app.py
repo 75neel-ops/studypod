@@ -219,7 +219,20 @@ def create_pod_ui(user):
     with st.form("create_pod_form"):
         pod_name = st.text_input("Pod name", placeholder="e.g. Class 10 Maths Sprint")
         initial_chapters = "\n".join(suggestions)
-        chapters_text = st.text_area("Chapters / topics (one per line)", value=initial_chapters, height=140)
+        chapters_text = st.text_area(
+            "Chapter catalogue (one chapter per line)",
+            value=initial_chapters,
+            height=140,
+            help="Use Gemini suggestions or enter your syllabus chapters manually. You can then select several chapters below.",
+        )
+        chapter_options = list(dict.fromkeys(x.strip() for x in chapters_text.splitlines() if x.strip()))
+        selected_chapters = st.multiselect(
+            "Select all chapters included in this examination",
+            options=chapter_options,
+            default=chapter_options,
+            help="Select multiple chapters. Remove any chapters that are not part of this examination.",
+        )
+        st.caption(f"{len(selected_chapters)} chapter(s) selected for the study plan.")
         date_col, marks_col = st.columns(2)
         with date_col:
             exam_date = st.date_input("Exam date", value=date.today() + timedelta(days=45), min_value=date.today())
@@ -241,12 +254,25 @@ def create_pod_ui(user):
         submitted = st.form_submit_button("Create my StudyPod and sprint", type="primary", use_container_width=True)
 
     if submitted:
-        chapters = list(dict.fromkeys(x.strip() for x in chapters_text.splitlines() if x.strip()))
+        chapters = list(dict.fromkeys(x.strip() for x in selected_chapters if x.strip()))
         if not pod_name.strip():
             st.error("Please enter a pod name.")
             return
         if not chapters or len(chapters) > 30:
             st.error("Enter between 1 and 30 chapters, one per line.")
+            return
+        existing = db.get_user_pods(user["username"])
+        duplicate = next((
+            p for p in existing
+            if p.get("owner_username") == user["username"]
+            and p.get("name", "").strip().casefold() == pod_name.strip().casefold()
+            and p.get("class_name") == class_name
+            and p.get("board") == board
+            and p.get("subject") == subject
+            and p.get("exam_date") == exam_date.isoformat()
+        ), None)
+        if duplicate:
+            st.error("You already own a StudyPod with this name, class, board, subject and exam date. Open the existing pod instead of creating a duplicate.")
             return
         if not any(daily_hours.values()):
             st.error("Please make at least one study hour available during the week.")
@@ -520,14 +546,41 @@ def main():
         if not pods:
             st.info("You haven't joined a StudyPod yet. Create one or join with an invite code.")
         for pod in pods:
-            left, right = st.columns([4, 1])
-            with left:
+            is_owner = pod.get("owner_username") == user["username"]
+            columns = st.columns([4, 1, 1] if is_owner else [4, 1])
+            with columns[0]:
                 st.markdown(f"**{pod['name']}**")
                 st.caption(f"{pod['class_name']} · {pod['board']} · {pod['subject']} · Exam {pod['exam_date']}")
-            with right:
+            with columns[1]:
                 if st.button("Open", key=f"open_pod_{pod['_id']}"):
                     st.session_state.active_pod_id = str(pod["_id"])
                     st.rerun()
+            if is_owner:
+                with columns[2]:
+                    if st.button("Delete", key=f"request_delete_pod_{pod['_id']}", type="secondary"):
+                        st.session_state.delete_pod_id = str(pod["_id"])
+                        st.rerun()
+
+        pending_delete = st.session_state.get("delete_pod_id")
+        if pending_delete:
+            target = next((p for p in pods if str(p["_id"]) == pending_delete), None)
+            if target and target.get("owner_username") == user["username"]:
+                st.warning(f"Delete **{target['name']}** permanently? Its members, weekly milestones, proof submissions and confidence ratings will also be deleted.")
+                confirm_col, cancel_col = st.columns(2)
+                with confirm_col:
+                    if st.button("Yes, permanently delete this StudyPod", key="confirm_delete_pod", type="primary"):
+                        if db.delete_pod(ObjectId(pending_delete), user["username"]):
+                            st.session_state.pop("delete_pod_id", None)
+                            if st.session_state.get("active_pod_id") == pending_delete:
+                                st.session_state.pop("active_pod_id", None)
+                            st.success("StudyPod and its associated records were deleted.")
+                            st.rerun()
+                        else:
+                            st.error("The StudyPod could not be deleted. Only its owner can delete it.")
+                with cancel_col:
+                    if st.button("Cancel deletion", key="cancel_delete_pod"):
+                        st.session_state.pop("delete_pod_id", None)
+                        st.rerun()
 
     active_pod = st.session_state.get("active_pod_id")
     if active_pod:
