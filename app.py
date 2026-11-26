@@ -206,33 +206,40 @@ def create_pod_ui(user):
                 suggestions = suggest_chapters(class_name, board, subject)
             if suggestions:
                 st.session_state.suggested_chapters = suggestions
+                st.session_state.pop("chapter_catalogue", None)
+                st.session_state.pop("selected_exam_chapters", None)
                 st.success("Chapter suggestions are ready. Please verify them against your current official syllabus.")
             else:
                 st.info("Gemini chapter suggestions are unavailable. You can enter chapters manually.")
     with clear_col:
         if st.button("Clear suggestions", key="clear_suggestions"):
             st.session_state.suggested_chapters = []
+            st.session_state.pop("chapter_catalogue", None)
+            st.session_state.pop("selected_exam_chapters", None)
 
     suggestions = st.session_state.get("suggested_chapters", [])
     if suggestions:
-        st.write("Suggested chapters (editable below):")
+        st.write("Suggested chapters (edit the list if needed):")
+    initial_chapters = "\n".join(suggestions)
+    chapters_text = st.text_area(
+        "Chapter catalogue (one chapter per line)",
+        value=initial_chapters,
+        height=140,
+        key="chapter_catalogue",
+        help="Use Gemini suggestions or enter your syllabus chapters manually. The list updates as you type.",
+    )
+    chapter_options = list(dict.fromkeys(x.strip() for x in chapters_text.splitlines() if x.strip()))
+    selected_chapters = st.multiselect(
+        "Select all chapters included in this examination",
+        options=chapter_options,
+        default=chapter_options,
+        key="selected_exam_chapters",
+        help="Select multiple chapters. Remove any chapters that are not part of this examination.",
+    )
+    st.caption(f"{len(selected_chapters)} chapter(s) selected for the study plan.")
+
     with st.form("create_pod_form"):
         pod_name = st.text_input("Pod name", placeholder="e.g. Class 10 Maths Sprint")
-        initial_chapters = "\n".join(suggestions)
-        chapters_text = st.text_area(
-            "Chapter catalogue (one chapter per line)",
-            value=initial_chapters,
-            height=140,
-            help="Use Gemini suggestions or enter your syllabus chapters manually. You can then select several chapters below.",
-        )
-        chapter_options = list(dict.fromkeys(x.strip() for x in chapters_text.splitlines() if x.strip()))
-        selected_chapters = st.multiselect(
-            "Select all chapters included in this examination",
-            options=chapter_options,
-            default=chapter_options,
-            help="Select multiple chapters. Remove any chapters that are not part of this examination.",
-        )
-        st.caption(f"{len(selected_chapters)} chapter(s) selected for the study plan.")
         date_col, marks_col = st.columns(2)
         with date_col:
             exam_date = st.date_input("Exam date", value=date.today() + timedelta(days=45), min_value=date.today())
