@@ -165,13 +165,36 @@ Dates must be YYYY-MM-DD. Keep daily focus concise and actionable.
 
 
 def suggest_chapters(class_name: str, board: str, subject: str) -> list[str]:
+    # Reliable offline catalogue for the current CBSE Class XI Mathematics syllabus.
+    # This keeps chapter selection usable even when no Gemini API key is configured.
+    offline_catalogues = {
+        ("Class 11", "CBSE", "Mathematics"): [
+            "Sets",
+            "Relations & Functions",
+            "Trigonometric Functions",
+            "Complex Numbers and Quadratic Equations",
+            "Linear Inequalities",
+            "Permutations and Combinations",
+            "Binomial Theorem",
+            "Sequence and Series",
+            "Straight Lines",
+            "Conic Sections",
+            "Introduction to Three-dimensional Geometry",
+            "Limits and Derivatives",
+            "Statistics",
+            "Probability",
+        ],
+    }
+    catalogue_key = (class_name, board, subject)
+    offline_chapters = offline_catalogues.get(catalogue_key, [])
+
     try:
         import streamlit as st
         from google import genai
         from google.genai import types
         api_key = st.secrets.get("gemini", {}).get("api_key", "")
         if not api_key:
-            return []
+            return offline_chapters
         model = st.secrets.get("gemini", {}).get("model", "gemini-3.5-flash-lite")
         client = genai.Client(api_key=api_key)
         class ChapterList(BaseModel):
@@ -180,7 +203,7 @@ def suggest_chapters(class_name: str, board: str, subject: str) -> list[str]:
             f"Suggest a concise list of likely syllabus chapter/topic names for {class_name}, "
             f"{board}, subject {subject}, India. Return only chapter names. "
             "If the exact board syllabus is uncertain, say so in a short note field and do not invent certainty."
-            )
+        )
         response = client.models.generate_content(
             model=model,
             contents=prompt,
@@ -191,6 +214,7 @@ def suggest_chapters(class_name: str, board: str, subject: str) -> list[str]:
             ),
         )
         result = ChapterList.model_validate_json(response.text or "{}")
-        return list(dict.fromkeys(x.strip() for x in result.chapters if x.strip()))[:30]
+        generated = list(dict.fromkeys(x.strip() for x in result.chapters if x.strip()))[:30]
+        return generated or offline_chapters
     except Exception:
-        return []
+        return offline_chapters
