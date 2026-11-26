@@ -662,6 +662,150 @@ def open_pod_ui(user, pod_id_text: str):
         render_agenda(milestone, members)
 
 
+
+def master_timetable_ui(user):
+    st.subheader("🗓️ My Master Study Timetable")
+    st.caption("Combine one or many subject StudyPods into one day-wise timetable based on the total time you can study each day.")
+    all_pods = db.get_user_pods(user["username"])
+    if not all_pods:
+        st.info("Create or join at least one subject StudyPod first.")
+        return
+
+    labels = {
+        f"{p['name']} · {p['subject']} · Exam {p['exam_date']}": str(p["_id"])
+        for p in all_pods
+    }
+    selected_labels = st.multiselect(
+        "Choose the subjects / StudyPods to include",
+        options=list(labels.keys()),
+        default=list(labels.keys()),
+        key="master_selected_pods",
+        help="Choose one subject or combine all your subjects.",
+    )
+    selected_ids = [labels[label] for label in selected_labels]
+    selected_pods = [p for p in all_pods if str(p["_id"]) in selected_ids]
+    if not selected_pods:
+        st.warning("Select at least one subject StudyPod.")
+        return
+
+    st.markdown("**How many total hours can you study each day?**")
+    st.caption("Enter your total study time across ALL selected subjects, not hours per subject.")
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    defaults = [2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0]
+    hours = {}
+    cols = st.columns(4)
+    for index, day in enumerate(day_names):
+        with cols[index % 4]:
+            hours[day.lower()] = st.number_input(
+                day, min_value=0.0, max_value=12.0, value=defaults[index],
+                step=0.5, key=f"master_hours_{day.lower()}",
+            )
+    total_weekly = sum(hours.values())
+    st.metric("Total study time per week", f"{total_weekly:g} hours")
+    if total_weekly < 7:
+        st.error("This is less than 7 hours per week. Your preparation may fall behind. Increase your available time if possible, while protecting sleep and essential commitments.")
+    elif total_weekly < 10.5:
+        st.warning("Your weekly study time is quite limited. If your school and tuition routine allows, consider adding 2–3 hours per week.")
+
+    st.markdown("**Subjects included**")
+    for pod in selected_pods:
+        st.write(f"• {pod['subject']} — {pod['name']} ({len(pod.get('chapters', []))} selected chapters)")
+
+    if st.button("✨ Generate my combined timetable", type="primary", use_container_width=True):
+        if total_weekly <= 0:
+            st.error("Please enter at least some study time.")
+            return
+        exam_dates = [date.fromisoformat(p["exam_date"]) for p in selected_pods]
+        last_exam = max(exam_dates)
+        days_count = min((last_exam - date.today()).days + 1, 180)
+        if days_count <= 0:
+            st.error("The selected StudyPods have exam dates in the past. Update their exam dates or create new plans.")
+            return
+
+        queues = []
+        for pod in selected_pods:
+            chapters = list(pod.get("chapters", []))
+            if chapters:
+                for chapter in chapters:
+                    queues.append({
+                        "pod_id": str(pod["_id"]),
+                        "pod_name": pod["name"],
+                        "subject": pod["subject"],
+                        "chapter": chapter,
+                        "exam_date": pod["exam_date"],
+                        "done": False,
+                    })
+        if not queues:
+            st.error("The selected StudyPods do not contain any chapters.")
+            return
+
+        # Interleave subjects so the same subject is not assigned every day.
+        queues.sort(key=lambda item: (item["exam_date"], item["subject"], item["chapter"]))
+        schedule = []
+        cursor = date.today()
+        task_index = 0
+        while cursor <= last_exam and len(schedule) < 180:
+            capacity = float(hours.get(cursor.strftime("%A").lower(), 0))
+            tasks = []
+            remaining = capacity
+            guard = 0
+            while remaining >= 0.5 and guard < len(queues):
+                task = dict(queues[task_index % len(queues)])
+                task_hours = min(1.0, remaining)
+                task["hours"] = round(task_hours, 2)
+                tasks.append(task)
+                remaining = round(remaining - task_hours, 2)
+                task_index += 1
+                guard += 1
+            schedule.append({
+                "date": cursor.isoformat(),
+                "day": cursor.strftime("%A"),
+                "capacity": capacity,
+                "tasks": tasks,
+            })
+            cursor += timedelta(days=1)
+
+        db.save_master_timetable(user["username"], {
+            "pod_ids": selected_ids,
+            "hours": hours,
+            "schedule": schedule,
+            "last_exam": last_exam.isoformat(),
+        })
+        st.success("Your combined timetable has been generated and saved.")
+        st.rerun()
+
+    saved = db.get_master_timetable(user["username"])
+    if saved and saved.get("schedule"):
+        saved_ids = set(saved.get("pod_ids", []))
+        current_ids = set(selected_ids)
+        if saved_ids != current_ids:
+            st.info("Your saved timetable uses a different subject selection. Generate again to apply the current selection.")
+        st.markdown("---")
+        st.markdown("### Your day-wise study timetable")
+        st.caption(f"Through {saved.get('last_exam', '')}. Each day's hours are the total across your selected subjects.")
+        for day in saved["schedule"]:
+            with st.container(border=True):
+                st.markdown(f"**{day['day']} · {day['date']}**")
+                st.caption(f"Total planned study time: {day['capacity']:g} hours")
+                if not day.get("tasks"):
+                    st.write("Rest / no study time entered.")
+                for task_index, task in enumerate(day.get("tasks", [])):
+                    done = st.checkbox(
+                        f"{task['subject']} — {task['chapter']} ({task['hours']:g} h)",
+                        value=bool(task.get("done", False)),
+                        key=f"master_done_{day['date']}_{task_index}",
+                    )
+                    task["done"] = done
+                if st.button("Save this day's progress", key=f"save_master_{day['date']}"):
+                    db.save_master_timetable(user["username"], {
+                        "pod_ids": saved.get("pod_ids", []),
+                        "hours": saved.get("hours", {}),
+                        "schedule": saved["schedule"],
+                        "last_exam": saved.get("last_exam", ""),
+                    })
+                    st.success("Daily progress saved.")
+                    st.rerun()
+
 def main():
     st.markdown('<div class="hero"><h1>📚 StudyPod</h1><p>Small groups. Smart sprints. Shared accountability.</p></div>', unsafe_allow_html=True)
     if not require_login():
@@ -683,11 +827,13 @@ def main():
         st.error(f"Cannot connect to MongoDB. Check Streamlit Secrets and Atlas Network Access. Details: {exc}")
         return
 
-    create_tab, join_tab, pods_tab = st.tabs(["➕ Create a pod", "🔑 Join with code", "📚 My StudyPods"])
+    create_tab, join_tab, pods_tab, master_tab = st.tabs(["➕ Create a pod", "🔑 Join with code", "📚 My StudyPods", "🗓️ Master timetable"])
     with create_tab:
         create_pod_ui(user)
     with join_tab:
         join_pod_ui(user)
+    with master_tab:
+        master_timetable_ui(user)
     with pods_tab:
         pods = db.get_user_pods(user["username"])
         if not pods:
