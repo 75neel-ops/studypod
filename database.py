@@ -103,6 +103,43 @@ def create_pod_document(pod: dict[str, Any]) -> str:
     return str(result.inserted_id)
 
 
+def delete_pod(pod_id, owner_username: str) -> bool:
+    """Delete a pod and all dependent records. Only the recorded owner may do this."""
+    database = get_db()
+    pod = database.pods.find_one({"_id": pod_id, "owner_username": owner_username})
+    if not pod:
+        return False
+
+    milestones = list(database.milestones.find({"pod_id": pod_id}, {"_id": 1}))
+    milestone_ids = [item["_id"] for item in milestones]
+    proofs = list(database.proofs.find({"milestone_id": {"$in": milestone_ids}}, {"file_id": 1}))
+
+    upload_ids = set()
+    if pod.get("syllabus_file_id"):
+        upload_ids.add(str(pod["syllabus_file_id"]))
+    for proof in proofs:
+        if proof.get("file_id"):
+            upload_ids.add(str(proof["file_id"]))
+
+    if milestone_ids:
+        database.proofs.delete_many({"milestone_id": {"$in": milestone_ids}})
+        database.confidence.delete_many({"milestone_id": {"$in": milestone_ids}})
+    database.milestones.delete_many({"pod_id": pod_id})
+    database.members.delete_many({"pod_id": pod_id})
+    database.pods.delete_one({"_id": pod_id, "owner_username": owner_username})
+
+    # Remove files uploaded specifically for this pod (syllabus and proof attachments).
+    from bson import ObjectId
+    bucket = get_bucket()
+    for file_id in upload_ids:
+        try:
+            bucket.delete(ObjectId(file_id))
+        except Exception:
+            # The pod is already deleted; a missing attachment should not block cleanup.
+            pass
+    return True
+
+
 def add_member(pod_id, username: str, display_name: str, role: str = "member") -> None:
     get_db().members.insert_one({
         "pod_id": pod_id,
