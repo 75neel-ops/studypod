@@ -264,6 +264,19 @@ def create_pod_ui(user):
                     day, min_value=0.0, max_value=12.0, value=defaults[idx],
                     step=0.5, key=f"hours_{day.lower()}",
                 )
+        weekly_available_hours = sum(daily_hours.values())
+        if weekly_available_hours < 7:
+            st.warning(
+                f"You have entered only {weekly_available_hours:g} study hours for the whole week. "
+                "That is likely too little for steady exam preparation. Increase the hours on some days "
+                "if possible, without sacrificing sleep or essential commitments."
+            )
+        elif weekly_available_hours < 10.5:
+            st.info(
+                f"You have entered {weekly_available_hours:g} hours per week. "
+                "StudyPod recommends aiming for around 10.5 hours weekly (about 1.5 hours daily on average), "
+                "if your routine allows."
+            )
         syllabus_file = st.file_uploader("Syllabus / routine PDF or image (optional)", type=["pdf", "png", "jpg", "jpeg", "webp"], key="syllabus_upload")
         submitted = st.form_submit_button("Create my StudyPod and sprint", type="primary", use_container_width=True)
 
