@@ -127,6 +127,8 @@ def delete_pod(pod_id, owner_username: str) -> bool:
         database.proofs.delete_many({"milestone_id": {"$in": milestone_ids}})
         database.confidence.delete_many({"milestone_id": {"$in": milestone_ids}})
     database.milestones.delete_many({"pod_id": pod_id})
+    database.learner_plans.delete_many({"pod_id": pod_id})
+    database.task_progress.delete_many({"pod_id": pod_id})
     database.members.delete_many({"pod_id": pod_id})
     database.pods.delete_one({"_id": pod_id, "owner_username": owner_username})
 
