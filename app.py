@@ -12,7 +12,7 @@ import streamlit.components.v1 as components
 from bson import ObjectId
 
 import database as db
-from planner import generate_sprint, suggest_chapters
+from planner import generate_sprint, suggest_chapters, rebalance_schedule
 
 st.set_page_config(page_title="StudyPod | NilanjanC", page_icon="📚", layout="wide")
 
@@ -444,14 +444,131 @@ def open_pod_ui(user, pod_id_text: str):
         st.write("**Weekly tasks**")
         for task in milestone.get("tasks", []):
             st.write("• " + task)
-        st.markdown("**Your daily schedule**")
+        # Build a private schedule for this learner so one student's missed work
+        # never changes another pod member's timetable.
+        learner_plan = db.get_learner_plan(pod_id, user["username"])
+        if not learner_plan:
+            base_schedule = []
+            for week in milestones:
+                for item in week.get("daily_schedule", []):
+                    day_item = dict(item)
+                    day_item["base_planned_hours"] = float(day_item.get("planned_hours", 0) or 0)
+                    day_item["base_focus"] = str(day_item.get("focus", ""))
+                    base_schedule.append(day_item)
+            base_schedule.sort(key=lambda item: item.get("date", ""))
+            db.save_learner_plan(pod_id, user["username"], base_schedule)
+            learner_plan = db.get_learner_plan(pod_id, user["username"])
+        learner_schedule = learner_plan.get("schedule", []) if learner_plan else []
+        # Backfill the base values for plans created before task tracking was introduced.
+        for item in learner_schedule:
+            item.setdefault("base_planned_hours", float(item.get("planned_hours", 0) or 0))
+            item.setdefault("base_focus", str(item.get("focus", "")))
+        db.save_learner_plan(pod_id, user["username"], learner_schedule)
+
+        progress_records = db.get_task_progress(pod_id, user["username"])
+        progress_by_date = {item["date"]: item for item in progress_records}
+        weekly_hours = sum(float(value or 0) for value in pod.get("daily_hours", {}).values())
+        if weekly_hours < 7:
+            st.error(
+                f"Your available study time is only {weekly_hours:g} hours per week. "
+                "This is very low for exam preparation. Please increase your study time where possible; "
+                "aim for at least 1–1.5 hours on most days, while protecting sleep and school commitments."
+            )
+        elif weekly_hours < 10.5:
+            st.warning(
+                f"You have {weekly_hours:g} study hours per week. Consider adding another 2–3 hours weekly "
+                "if your school, tuition and rest schedule allows."
+            )
+
+        st.markdown("**Your daily schedule and task completion**")
+        st.caption("After each study day, record whether you completed the task and how much time you actually studied. StudyPod will adjust the remaining plan when work is missed.")
+        learner_days = {item.get("date"): item for item in learner_schedule}
         for day in milestone.get("daily_schedule", []):
+            current_day = learner_days.get(day["date"], day)
+            saved = progress_by_date.get(day["date"], {})
             with st.container(border=True):
-                a, b = st.columns([1, 4])
-                a.markdown(f"**{day['day']}**")
-                a.caption(f"{day['date']}")
-                b.write(f"**{day['planned_hours']} / {day['available_hours']} hours**")
-                b.caption(day["focus"])
+                st.markdown(f"**{day['day']} · {day['date']}**")
+                st.write(f"**Planned: {float(current_day.get('planned_hours', 0) or 0):g} / {float(current_day.get('available_hours', 0) or 0):g} hours**")
+                st.caption(current_day.get("focus", day.get("focus", "")))
+                with st.form(f"daily_task_{milestone_id}_{day['date']}"):
+                    status_options = ["Not started", "Completed", "Partly completed"]
+                    current_status = saved.get("status", "Not started")
+                    status_index = status_options.index(current_status) if current_status in status_options else 0
+                    task_status = st.selectbox(
+                        "Did you complete today's study task?",
+                        status_options,
+                        index=status_index,
+                        key=f"task_status_{milestone_id}_{day['date']}",
+                    )
+                    hours_spent = st.number_input(
+                        "Actual study time (hours)",
+                        min_value=0.0,
+                        max_value=12.0,
+                        value=float(saved.get("hours_spent", 0) or 0),
+                        step=0.25,
+                        key=f"task_hours_{milestone_id}_{day['date']}",
+                    )
+                    task_note = st.text_input(
+                        "What was completed / what is still difficult? (optional)",
+                        value=saved.get("note", ""),
+                        key=f"task_note_{milestone_id}_{day['date']}",
+                    )
+                    task_saved = st.form_submit_button("Save completion status")
+                if task_saved:
+                    db.save_task_progress(
+                        pod_id, user["username"], day["date"],
+                        task_status, hours_spent, task_note,
+                    )
+                    refreshed_progress = db.get_task_progress(pod_id, user["username"])
+                    refreshed_by_date = {item["date"]: item for item in refreshed_progress}
+                    today_text = date.today().isoformat()
+                    backlog = 0.0
+                    for planned_day in learner_schedule:
+                        planned_date = str(planned_day.get("date", ""))
+                        if planned_date <= today_text:
+                            record = refreshed_by_date.get(planned_date, {})
+                            if record.get("status") != "Completed":
+                                base_hours = float(planned_day.get("base_planned_hours", planned_day.get("planned_hours", 0)) or 0)
+                                spent = float(record.get("hours_spent", 0) or 0)
+                                backlog += max(0.0, base_hours - spent)
+                    # Always start from the original plan before redistributing backlog,
+                    # preventing the same missed hours from being added repeatedly.
+                    reset_schedule = []
+                    for planned_day in learner_schedule:
+                        copy_day = dict(planned_day)
+                        if str(copy_day.get("date", "")) > today_text:
+                            copy_day["planned_hours"] = float(copy_day.get("base_planned_hours", copy_day.get("planned_hours", 0)) or 0)
+                            copy_day["focus"] = str(copy_day.get("base_focus", copy_day.get("focus", "")))
+                        reset_schedule.append(copy_day)
+                    revised_schedule, unmet_hours = rebalance_schedule(reset_schedule, backlog, today_text)
+                    db.save_learner_plan(pod_id, user["username"], revised_schedule)
+                    if backlog > 0:
+                        if unmet_hours > 0:
+                            future_days = sum(
+                                1 for item in revised_schedule
+                                if str(item.get("date", "")) > today_text
+                                and float(item.get("available_hours", 0) or 0) > 0
+                            )
+                            extra_per_day = unmet_hours / max(1, future_days)
+                            st.session_state["task_feedback"] = (
+                                f"Your plan has been adjusted, but {unmet_hours:.2f} hours cannot fit into your current availability. "
+                                f"Please consider adding about {extra_per_day:.2f} extra study hours on each remaining study day, "
+                                "if practical. If that is not possible, prioritise the most important topics and speak to your teacher."
+                            )
+                        else:
+                            st.session_state["task_feedback"] = (
+                                f"Your remaining plan has been adjusted to include {backlog:.2f} catch-up hours. "
+                                "Future study sessions are slightly longer, within the availability you entered."
+                            )
+                    else:
+                        st.session_state["task_feedback"] = "Progress saved. Your remaining schedule is up to date."
+                    st.rerun()
+        feedback = st.session_state.pop("task_feedback", None)
+        if feedback:
+            if "cannot fit" in feedback:
+                st.warning(feedback)
+            else:
+                st.success(feedback)
         st.caption(pod.get("planner_source", "StudyPod sprint planner"))
 
     with tabs[1]:
