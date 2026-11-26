@@ -35,6 +35,7 @@ def mongo_resources():
     )
     database.learner_plans.create_index([("pod_id", ASCENDING), ("username", ASCENDING)], unique=True)
     database.task_progress.create_index([("pod_id", ASCENDING), ("username", ASCENDING), ("date", ASCENDING)], unique=True)
+    database.master_timetables.create_index([("username", ASCENDING)], unique=True)
     return client, database, GridFSBucket(database, bucket_name="studypod_uploads")
 
 
@@ -260,6 +261,20 @@ def save_task_progress(pod_id, username: str, task_date: str,
         }, "$setOnInsert": {"pod_id": pod_id, "username": username, "date": task_date}},
         upsert=True,
     )
+
+
+def get_master_timetable(username: str) -> dict[str, Any] | None:
+    return get_db().master_timetables.find_one({"username": username})
+
+
+def save_master_timetable(username: str, payload: dict[str, Any]) -> None:
+    get_db().master_timetables.update_one(
+        {"username": username},
+        {"$set": {**payload, "updated_at": utcnow()},
+         "$setOnInsert": {"username": username, "created_at": utcnow()}},
+        upsert=True,
+    )
+
 
 def member_count(pod_id) -> int:
     return get_db().members.count_documents({"pod_id": pod_id})
