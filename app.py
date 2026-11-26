@@ -525,8 +525,8 @@ def open_pod_ui(user, pod_id_text: str):
                     backlog = 0.0
                     for planned_day in learner_schedule:
                         planned_date = str(planned_day.get("date", ""))
-                        if planned_date <= today_text:
-                            record = refreshed_by_date.get(planned_date, {})
+                        if planned_date <= today_text and planned_date in refreshed_by_date:
+                            record = refreshed_by_date[planned_date]
                             if record.get("status") != "Completed":
                                 base_hours = float(planned_day.get("base_planned_hours", planned_day.get("planned_hours", 0)) or 0)
                                 spent = float(record.get("hours_spent", 0) or 0)
