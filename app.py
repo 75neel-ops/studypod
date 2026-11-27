@@ -474,7 +474,7 @@ def open_pod_ui(user, pod_id_text: str):
     selected_label = st.selectbox("Choose sprint week", list(milestone_labels.keys()))
     milestone_id = milestone_labels[selected_label]
     milestone = db.get_milestone(milestone_id)
-    tabs = st.tabs(["1 · Daily sprint", "2 · Proof of work", "3 · Group vault", "4 · Confidence & agenda"])
+    tabs = st.tabs(["1 · Subject overview", "2 · Proof of work", "3 · Group vault", "4 · Confidence & agenda"])
 
     with tabs[0]:
         st.markdown(f"### {milestone.get('title', 'Weekly sprint')}")
@@ -908,7 +908,7 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
             for day in schedule:
                 for task in day.get("tasks", []):
                     if task.get("done"):
-                        if day["date"] <= today_text:
+                        if day["date"] >= today_text:
                             completed_past.append((day["date"], dict(task)))
                     else:
                         pending_task = dict(task)
