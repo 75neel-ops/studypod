@@ -403,6 +403,75 @@ def practice_questions(subject: str, chapters: list[str], board: str, class_name
     return "\n".join([f"{i+1}. Write a clear explanation and solve one board-style problem from **{topic}**." for i, topic in enumerate(chapters[:8])])
 
 
+def create_chapter_quiz(subject: str, chapter: str, board: str, class_name: str, nonce: str) -> dict:
+    """Create a fresh five-question quiz; never reveal answers before submission."""
+    cfg = secret_section("gemini")
+    api_key = cfg.get("api_key", "")
+    if not api_key:
+        raise RuntimeError("Gemini API key is not configured.")
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    model = cfg.get("model", "gemini-3.5-flash-lite")
+    prompt = f"""
+Create a NEW assessment for {class_name}, {board}, subject {subject}, chapter {chapter}.
+Variation seed: {nonce}. Do not reuse common template questions.
+Return valid JSON only with this exact shape:
+{{"questions":[
+ {{"type":"Conceptual","question":"...","expected_answer":"...","marking_points":["..."]}},
+ {{"type":"Conceptual","question":"...","expected_answer":"...","marking_points":["..."]}},
+ {{"type":"Numerical","question":"...","expected_answer":"...","marking_points":["..."]}},
+ {{"type":"Numerical","question":"...","expected_answer":"...","marking_points":["..."]}},
+ {{"type":"Application-based","question":"...","expected_answer":"...","marking_points":["..."]}}
+]}}
+Use age-appropriate syllabus-level questions. Numerical questions must contain all needed data.
+Make each question distinct. Do not include answers outside the JSON fields.
+"""
+    response = client.models.generate_content(model=model, contents=prompt)
+    raw = (response.text or "").strip().replace("```json", "").replace("```", "").strip()
+    data = json.loads(raw)
+    questions = data.get("questions", [])
+    if len(questions) != 5:
+        raise ValueError("The quiz generator did not return exactly five questions.")
+    return {"subject": subject, "chapter": chapter, "questions": questions, "created_at": db.utcnow()}
+
+
+def evaluate_chapter_quiz(quiz: dict, answers: list[str], class_name: str, board: str) -> dict:
+    cfg = secret_section("gemini")
+    api_key = cfg.get("api_key", "")
+    if not api_key:
+        raise RuntimeError("Gemini API key is not configured.")
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    model = cfg.get("model", "gemini-3.5-flash-lite")
+    evidence = []
+    for index, (question, answer) in enumerate(zip(quiz["questions"], answers), 1):
+        evidence.append({
+            "number": index, "type": question.get("type", ""),
+            "question": question.get("question", ""),
+            "expected_answer": question.get("expected_answer", ""),
+            "marking_points": question.get("marking_points", []),
+            "student_answer": answer,
+        })
+    prompt = f"""
+Evaluate this student's quiz for {class_name}, {board}, {quiz['subject']} — {quiz['chapter']}.
+Be fair to equivalent wording and correct working. Award partial marks for valid reasoning.
+Do not infer learning from blank answers. Total is 10 marks (2 per question).
+Return valid JSON only:
+{{"score":0,"max_score":10,
+"question_feedback":[{{"number":1,"score":0,"max_score":2,"feedback":"...","difficulty":"..."}}, ...],
+"strengths":["..."],"difficulty_areas":["specific concept or skill..."],
+"study_suggestions":["specific action..."],"overall_feedback":"..."}}
+Student responses and reference answers:
+{json.dumps(evidence, ensure_ascii=False)}
+"""
+    response = client.models.generate_content(model=model, contents=prompt)
+    raw = (response.text or "").strip().replace("```json", "").replace("```", "").strip()
+    result = json.loads(raw)
+    result["score"] = max(0, min(10, float(result.get("score", 0))))
+    result["max_score"] = 10
+    return result
+
+
 def render_agenda(milestone, members):
     ratings = db.get_confidence(milestone["_id"])
     member_names = {m["username"]: m["display_name"] for m in members}
