@@ -880,6 +880,43 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                 break
             if not placed:
                 pending.append(task)
+        # Add a steady daily study routine after deadline work and exam milestones
+        # have been placed. Use up to 85% of each day's capacity, keeping a buffer
+        # for breaks, meals and unexpected school work.
+        study_pool = [
+            exam for exam in exam_records
+            if exam.get("chapters") and date.fromisoformat(exam["exam_date"]) >= today
+        ]
+        study_pool.sort(key=lambda item: (item["exam_date"], item["subject"]))
+        if study_pool:
+            for day_index, row in enumerate(rows):
+                capacity = float(row["capacity"])
+                target_hours = round(capacity * 0.85, 2)
+                used_hours = sum(float(task.get("hours", 0) or 0) for task in row["tasks"])
+                slot_index = 0
+                while used_hours + 0.49 < target_hours:
+                    spare_to_target = round(target_hours - used_hours, 2)
+                    duration = min(1.0, spare_to_target)
+                    if duration < 0.5:
+                        break
+                    exam = study_pool[(day_index + slot_index) % len(study_pool)]
+                    chapters = exam.get("chapters", [])
+                    chapter = chapters[((day_index // max(1, len(study_pool))) + slot_index) % len(chapters)]
+                    row["tasks"].append({
+                        "id": secrets.token_hex(8),
+                        "kind": "Daily study",
+                        "subject": exam["subject"],
+                        "chapter": chapter,
+                        "title": chapter,
+                        "phase": "Understand, practise and review",
+                        "hours": duration,
+                        "target_date": row["date"],
+                        "due_date": exam["exam_date"],
+                        "done": False,
+                    })
+                    used_hours = round(used_hours + duration, 2)
+                    slot_index += 1
+
         for row in rows:
             row["tasks"].sort(key=lambda task: (task.get("kind", "") not in ("Project", "Homework"), task.get("subject", ""), task.get("title", "")))
 
