@@ -267,7 +267,7 @@ def create_pod_ui(user):
             placeholder="Maths exercise 5 | 2026-12-02 | 1.5",
         )
         syllabus_file = st.file_uploader("Reference syllabus PDF or image (optional — upload an exam/assignment routine in Master timetable for automatic reading)", type=["pdf", "png", "jpg", "jpeg", "webp"], key="syllabus_upload")
-        submitted = st.form_submit_button("Create my StudyPod and sprint", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("Create my subject StudyPod", type="primary", use_container_width=True)
 
     if submitted:
         chapters = list(dict.fromkeys(
@@ -355,7 +355,7 @@ def create_pod_ui(user):
             db.add_member(pod_id, user["username"], user["display_name"], "owner")
             db.create_milestones(pod_id, [week.model_dump() for week in plan.weeks])
         st.success(f"StudyPod created! Invite code: {pod_doc['invite_code']}")
-        st.info(f"Sprint source: {source}. Share the invite code with up to four other students.")
+        st.info(f"Subject pod created. Share the invite code with up to four other students. Daily study hours will be set in Master timetable.")
         st.session_state.active_pod_id = str(pod_id)
         st.rerun()
 
@@ -457,6 +457,12 @@ def open_pod_ui(user, pod_id_text: str):
     with st.expander("Pod details and members"):
         st.write("**Members:** " + ", ".join(m["display_name"] for m in members))
         st.write("**Chapters:** " + ", ".join(pod.get("chapters", [])))
+        for label, key in [("Projects", "projects"), ("Homework", "homeworks")]:
+            items = pod.get(key, [])
+            if items:
+                st.write(f"**{label}:**")
+                for item in items:
+                    st.write(f"• {item['title']} — due {item['due_date']} · {item['estimated_hours']:g} h")
         if pod.get("syllabus_file_id"):
             try:
                 raw, metadata = db.read_upload(pod["syllabus_file_id"])
