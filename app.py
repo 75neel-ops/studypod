@@ -820,16 +820,26 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                 remaining = round(remaining - chunk, 2)
 
         task_queue.sort(key=lambda t: (t["target_date"], 0 if t["kind"] in ("Project", "Homework") else 1, t["subject"], t["title"]))
-        pending = list(task_queue)
-        for row in rows:
-            spare = float(row["capacity"])
-            while pending and spare >= 0.5:
-                eligible_index = next((i for i, task in enumerate(pending) if row["date"] <= task["target_date"] and row["date"] <= task.get("due_date", "9999-12-31") and task["hours"] <= spare), None)
-                if eligible_index is None:
+        # Back-plan each session from its target date. This spaces learning,
+        # practice and revision close to their intended windows instead of
+        # consuming all available hours at the beginning of the calendar.
+        pending = []
+        for task in task_queue:
+            placed = False
+            latest_date = min(task.get("target_date", task.get("due_date", end_date.isoformat())),
+                              task.get("due_date", end_date.isoformat()))
+            for row in reversed(rows):
+                if row["date"] > latest_date:
+                    continue
+                spare = round(float(row["capacity"]) - sum(float(t.get("hours", 0) or 0) for t in row["tasks"]), 2)
+                if float(task["hours"]) <= spare:
+                    row["tasks"].append(task)
+                    placed = True
                     break
-                task = pending.pop(eligible_index)
-                row["tasks"].append(task)
-                spare = round(spare - float(task["hours"]), 2)
+            if not placed:
+                pending.append(task)
+        for row in rows:
+            row["tasks"].sort(key=lambda task: (task.get("kind", "") not in ("Project", "Homework"), task.get("subject", ""), task.get("title", "")))
 
         db.save_master_timetable(user["username"], {
             "pod_ids": selected_ids,
@@ -925,16 +935,20 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                 row = next((x for x in remaining_rows if x["date"] == old_date), None)
                 if row:
                     row["tasks"].append(task)
-            pending = sorted(unfinished, key=lambda t: (t.get("target_date", t.get("due_date", "9999-12-31")), 0 if t.get("kind") in ("Project", "Homework") else 1))
-            for row in remaining_rows:
-                spare = max(0.0, row["capacity"] - sum(float(t.get("hours", 0) or 0) for t in row["tasks"]))
-                while pending and spare >= 0.5:
-                    idx = next((i for i, task in enumerate(pending) if row["date"] <= task.get("target_date", task.get("due_date", "9999-12-31")) and row["date"] <= task.get("due_date", "9999-12-31") and float(task.get("hours", 0) or 0) <= spare), None)
-                    if idx is None:
+            pending = []
+            for task in sorted(unfinished, key=lambda t: (t.get("target_date", t.get("due_date", "9999-12-31")), 0 if t.get("kind") in ("Project", "Homework") else 1)):
+                placed = False
+                latest_date = min(task.get("target_date", task.get("due_date", "9999-12-31")), task.get("due_date", "9999-12-31"))
+                for row in reversed(remaining_rows):
+                    if row["date"] > latest_date:
+                        continue
+                    spare = round(float(row["capacity"]) - sum(float(t.get("hours", 0) or 0) for t in row["tasks"]), 2)
+                    if float(task.get("hours", 0) or 0) <= spare:
+                        row["tasks"].append(task)
+                        placed = True
                         break
-                    task = pending.pop(idx)
-                    row["tasks"].append(task)
-                    spare = round(spare - float(task.get("hours", 0) or 0), 2)
+                if not placed:
+                    pending.append(task)
             db.save_master_timetable(user["username"], {
                 "pod_ids": saved.get("pod_ids", []), "hours": saved.get("hours", {}),
                 "weak_subjects": saved.get("weak_subjects", []), "schedule": remaining_rows,
