@@ -708,8 +708,8 @@ def master_timetable_ui(user):
         st.warning("Your weekly study time is limited for several subjects. The planner will still use your available time, but check whether the workload is realistic.")
 
     st.markdown("**Subjects and exam dates**")
-    for pod in sorted(selected_pods, key=lambda p: p["exam_date"]):
-        st.write(f"• **{pod['subject']}** — {len(p.get('chapters', []))} chapters · Exam {pod['exam_date']}")
+    for pod in sorted(selected_pods, key=lambda item: item["exam_date"]):
+        st.write(f"• **{pod['subject']}** — {len(pod.get('chapters', []))} chapters · Exam {pod['exam_date']}")
 
     st.info("The timetable uses three stages: learn and practise every selected chapter, then revise it, then do a final recall/test. It rotates subjects so you do not have to study every subject every day. Some days may focus on only one or two subjects.")
 
