@@ -767,6 +767,18 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
         assignments += list(saved.get("extra_assignments", []))
         assignments += list(imported_assignments)
 
+        # Show a transparent audit of every deadline item included in this plan.
+        if assignments:
+            with st.expander(f"🔎 Deadline items detected ({len(assignments)})", expanded=True):
+                for item in assignments:
+                    st.write(
+                        f"**{item.get('type', 'Homework')}: {item.get('title', 'Untitled')}**"
+                        f" · {item.get('subject', 'General')} · due {item.get('due_date', 'date missing')}"
+                        f" · {float(item.get('estimated_hours', 1) or 1):g} h"
+                    )
+        else:
+            st.warning("No projects or homework were found in the selected StudyPods or Master timetable. Check that you selected the correct StudyPod and saved the task.")
+
         all_dates = [date.fromisoformat(x["exam_date"]) for x in exam_records]
         all_dates += [date.fromisoformat(x["due_date"]) for x in assignments]
         end_date = max(all_dates) if all_dates else today + timedelta(days=30)
