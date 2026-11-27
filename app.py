@@ -1122,6 +1122,9 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
     st.markdown("---")
     st.markdown("## 🧠 Daily Proof of Learning")
     st.caption("No notebook uploads. After a chapter is marked complete and progress is saved, the student takes a fresh five-question quiz. StudyPod evaluates the answers, identifies gaps and recommends focused revision.")
+    exam_app_url = "https://cbse-q-ix-to-xii-rjm93tbzelrlhdjjcdpdih.streamlit.app/"
+    st.link_button("📝 Practise a Full-Length Examination · Open NilanjanC Exam App", exam_app_url, use_container_width=True)
+    st.caption("Use the separate exam app to create a full question paper, attempt it and review marks and evaluation.")
     completed_chapters = {}
     for day in schedule:
         for task in day.get("tasks", []):
