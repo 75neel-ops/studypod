@@ -190,7 +190,7 @@ def show_donation():
 
 def create_pod_ui(user):
     st.subheader("Create a StudyPod")
-    st.caption("Build a sprint around your exam date and the hours you can realistically study after school and tuition.")
+    st.caption("Add each subject, its exam chapters, and any homework or projects with deadlines. Set your total daily study hours only in Master timetable.")
     class_col, board_col, subject_col = st.columns(3)
     with class_col:
         class_name = st.selectbox("Class", ["Class 9", "Class 10", "Class 11", "Class 12"], key="new_class")
@@ -252,31 +252,20 @@ def create_pod_ui(user):
             exam_date = st.date_input("Exam date", value=date.today() + timedelta(days=45), min_value=date.today())
         with marks_col:
             total_marks = st.selectbox("Total marks", [40, 50, 70, 80, 90, 100], index=3)
-        st.markdown("**Your available study time**")
-        st.caption("Enter your realistic maximum hours after school, tuition and other commitments. Enter 0 on days you cannot study.")
-        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        defaults = [1.5, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0]
-        daily_hours = {}
-        cols = st.columns(4)
-        for idx, day in enumerate(day_names):
-            with cols[idx % 4]:
-                daily_hours[day.lower()] = st.number_input(
-                    day, min_value=0.0, max_value=12.0, value=defaults[idx],
-                    step=0.5, key=f"hours_{day.lower()}",
-                )
-        weekly_available_hours = sum(daily_hours.values())
-        if weekly_available_hours < 7:
-            st.warning(
-                f"You have entered only {weekly_available_hours:g} study hours for the whole week. "
-                "That is likely too little for steady exam preparation. Increase the hours on some days "
-                "if possible, without sacrificing sleep or essential commitments."
-            )
-        elif weekly_available_hours < 10.5:
-            st.info(
-                f"You have entered {weekly_available_hours:g} hours per week. "
-                "StudyPod recommends aiming for around 10.5 hours weekly (about 1.5 hours daily on average), "
-                "if your routine allows."
-            )
+        st.markdown("**Projects and homework (optional)**")
+        st.caption("Enter one item per line in this format: Task title | YYYY-MM-DD | estimated hours. Example: Physics model | 2026-12-10 | 3")
+        project_text = st.text_area(
+            "Projects",
+            key="pod_projects_text",
+            height=90,
+            placeholder="Science model | 2026-12-10 | 3",
+        )
+        homework_text = st.text_area(
+            "Homework",
+            key="pod_homework_text",
+            height=90,
+            placeholder="Maths exercise 5 | 2026-12-02 | 1.5",
+        )
         syllabus_file = st.file_uploader("Syllabus / routine PDF or image (optional)", type=["pdf", "png", "jpg", "jpeg", "webp"], key="syllabus_upload")
         submitted = st.form_submit_button("Create my StudyPod and sprint", type="primary", use_container_width=True)
 
@@ -304,11 +293,45 @@ def create_pod_ui(user):
         if duplicate:
             st.error("You already own a StudyPod with this name, class, board, subject and exam date. Open the existing pod instead of creating a duplicate.")
             return
-        if not any(daily_hours.values()):
-            st.error("Please make at least one study hour available during the week.")
+        def parse_deadline_items(raw_text, item_type):
+            parsed = []
+            for line_no, line in enumerate(raw_text.splitlines(), 1):
+                if not line.strip():
+                    continue
+                parts = [part.strip() for part in line.split("|")]
+                if len(parts) < 2:
+                    st.error(f"{item_type}, line {line_no}: use Title | YYYY-MM-DD | estimated hours")
+                    return None
+                try:
+                    due = date.fromisoformat(parts[1])
+                    estimate = float(parts[2]) if len(parts) > 2 and parts[2] else 1.0
+                    if estimate <= 0 or estimate > 100:
+                        raise ValueError()
+                except ValueError:
+                    st.error(f"{item_type}, line {line_no}: enter a valid date (YYYY-MM-DD) and hours greater than 0.")
+                    return None
+                parsed.append({
+                    "title": parts[0][:140],
+                    "due_date": due.isoformat(),
+                    "estimated_hours": estimate,
+                    "subject": subject,
+                    "type": item_type,
+                    "done": False,
+                })
+            return parsed
+
+        projects = parse_deadline_items(project_text, "Project")
+        homeworks = parse_deadline_items(homework_text, "Homework")
+        if projects is None or homeworks is None:
             return
-        with st.spinner("Building a sprint that respects your daily availability..."):
-            plan, source = generate_sprint(chapters, exam_date, daily_hours, class_name, board, subject, total_marks)
+        if any(date.fromisoformat(item["due_date"]) < date.today() for item in projects + homeworks):
+            st.error("Project and homework deadlines must be today or in the future.")
+            return
+        # Group milestones remain available for StudyPod collaboration. Personal daily
+        # capacity is deliberately configured only once in Master timetable.
+        no_daily_capacity = {day: 0.0 for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]}
+        with st.spinner("Creating your subject StudyPod..."):
+            plan, source = generate_sprint(chapters, exam_date, no_daily_capacity, class_name, board, subject, total_marks)
             syllabus_id = db.store_upload(syllabus_file, user["username"], "syllabus") if syllabus_file else None
             pod_doc = {
                 "name": pod_name.strip()[:80],
@@ -320,7 +343,9 @@ def create_pod_ui(user):
                 "chapters": chapters,
                 "exam_date": exam_date.isoformat(),
                 "total_marks": int(total_marks),
-                "daily_hours": daily_hours,
+                "daily_hours": {},
+                "projects": projects,
+                "homeworks": homeworks,
                 "syllabus_file_id": syllabus_id,
                 "invite_code": make_invite_code(),
                 "created_at": db.utcnow(),
