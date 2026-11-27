@@ -822,7 +822,7 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
         for row in rows:
             spare = float(row["capacity"])
             while pending and spare >= 0.5:
-                eligible_index = next((i for i, task in enumerate(pending) if task["target_date"] <= row["date"] and task["hours"] <= spare), None)
+                eligible_index = next((i for i, task in enumerate(pending) if row["date"] <= task["target_date"] and row["date"] <= task.get("due_date", "9999-12-31") and task["hours"] <= spare), None)
                 if eligible_index is None:
                     break
                 task = pending.pop(eligible_index)
@@ -924,7 +924,7 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
             for row in remaining_rows:
                 spare = max(0.0, row["capacity"] - sum(float(t.get("hours", 0) or 0) for t in row["tasks"]))
                 while pending and spare >= 0.5:
-                    idx = next((i for i, task in enumerate(pending) if task.get("target_date", task.get("due_date", "9999-12-31")) <= row["date"] <= task.get("due_date", "9999-12-31") and float(task.get("hours", 0) or 0) <= spare), None)
+                    idx = next((i for i, task in enumerate(pending) if row["date"] <= task.get("target_date", task.get("due_date", "9999-12-31")) and row["date"] <= task.get("due_date", "9999-12-31") and float(task.get("hours", 0) or 0) <= spare), None)
                     if idx is None:
                         break
                     task = pending.pop(idx)
