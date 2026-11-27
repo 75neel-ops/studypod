@@ -1364,7 +1364,7 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                 "<style>body{font:15px Arial,sans-serif;max-width:900px;margin:35px auto;padding:0 24px;color:#172033}h1,h2{color:#253b80}table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid #ccd2df;padding:9px;text-align:left}th{background:#eef1fa}.muted{color:#596579}.score{font-size:22px;font-weight:bold}@media print{body{margin:12mm;max-width:none}.no-print{display:none}}</style></head><body>",
                 "<div class='no-print'><button onclick='window.print()'>Print / Save as PDF</button></div>",
                 "<h1>StudyPod — Student Learning Progress</h1>",
-                f"<p class='muted'>Student: {report_text(user.get('display_name', user.get('username', 'Student')))} · Generated: {report_text(datetime.now().strftime('%d %b %Y, %I:%M %p'))}</p>",
+                f"<p class='muted'>Student: {report_text(user.get('display_name', user.get('username', 'Student')))} · Generated: {report_text(date.today().strftime('%d %b %Y'))}</p>",
                 f"<h2>Overview: {report_text(selected_progress_chapter)}</h2>",
                 f"<p class='score'>Latest: {latest_score:g}/10 · Change since first quiz: {improvement:+g} · Trend: {report_text(trend_label)}</p>",
                 "<h2>Subject-wise performance</h2><table><tr><th>Subject</th><th>Quizzes</th><th>Average</th><th>Latest</th><th>First to latest</th></tr>",
