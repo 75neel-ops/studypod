@@ -857,22 +857,27 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                 remaining = round(remaining - chunk, 2)
 
         task_queue.sort(key=lambda t: (t["target_date"], 0 if t["kind"] in ("Project", "Homework") else 1, t["subject"], t["title"]))
-        # Back-plan each session from its target date. This spaces learning,
-        # practice and revision close to their intended windows instead of
-        # consuming all available hours at the beginning of the calendar.
+        # Spread each session across the least-loaded eligible day on or before
+        # its target. This uses the available time throughout the calendar rather
+        # than leaving early days empty and packing everything near deadlines.
         pending = []
         for task in task_queue:
             placed = False
             latest_date = min(task.get("target_date", task.get("due_date", end_date.isoformat())),
                               task.get("due_date", end_date.isoformat()))
-            for row in reversed(rows):
-                if row["date"] > latest_date:
+            eligible = []
+            for row in rows:
+                if row["date"] > latest_date or float(row["capacity"]) <= 0:
                     continue
-                spare = round(float(row["capacity"]) - sum(float(t.get("hours", 0) or 0) for t in row["tasks"]), 2)
+                used = sum(float(t.get("hours", 0) or 0) for t in row["tasks"])
+                spare = round(float(row["capacity"]) - used, 2)
                 if float(task["hours"]) <= spare:
-                    row["tasks"].append(task)
-                    placed = True
-                    break
+                    load_ratio = used / float(row["capacity"])
+                    eligible.append((load_ratio, row["date"], row))
+            for _, _, row in sorted(eligible, key=lambda item: (item[0], item[1])):
+                row["tasks"].append(task)
+                placed = True
+                break
             if not placed:
                 pending.append(task)
         for row in rows:
@@ -976,14 +981,18 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
             for task in sorted(unfinished, key=lambda t: (t.get("target_date", t.get("due_date", "9999-12-31")), 0 if t.get("kind") in ("Project", "Homework") else 1)):
                 placed = False
                 latest_date = min(task.get("target_date", task.get("due_date", "9999-12-31")), task.get("due_date", "9999-12-31"))
-                for row in reversed(remaining_rows):
-                    if row["date"] > latest_date:
+                eligible = []
+                for row in remaining_rows:
+                    if row["date"] > latest_date or float(row["capacity"]) <= 0:
                         continue
-                    spare = round(float(row["capacity"]) - sum(float(t.get("hours", 0) or 0) for t in row["tasks"]), 2)
+                    used = sum(float(t.get("hours", 0) or 0) for t in row["tasks"])
+                    spare = round(float(row["capacity"]) - used, 2)
                     if float(task.get("hours", 0) or 0) <= spare:
-                        row["tasks"].append(task)
-                        placed = True
-                        break
+                        eligible.append((used / float(row["capacity"]), row["date"], row))
+                for _, _, row in sorted(eligible, key=lambda item: (item[0], item[1])):
+                    row["tasks"].append(task)
+                    placed = True
+                    break
                 if not placed:
                     pending.append(task)
             db.save_master_timetable(user["username"], {
