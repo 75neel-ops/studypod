@@ -665,7 +665,7 @@ def open_pod_ui(user, pod_id_text: str):
 
 def master_timetable_ui(user):
     st.subheader("🗓️ My Master Study Timetable")
-    st.caption("Combine one or many subject StudyPods into one day-wise timetable based on the total time you can study each day.")
+    st.caption("One combined timetable for all selected subjects. Your daily hours are a TOTAL budget shared across subjects.")
     all_pods = db.get_user_pods(user["username"])
     if not all_pods:
         st.info("Create or join at least one subject StudyPod first.")
@@ -680,7 +680,7 @@ def master_timetable_ui(user):
         options=list(labels.keys()),
         default=list(labels.keys()),
         key="master_selected_pods",
-        help="Choose one subject or combine all your subjects.",
+        help="Select one subject or combine all five (or more) subjects.",
     )
     selected_ids = [labels[label] for label in selected_labels]
     selected_pods = [p for p in all_pods if str(p["_id"]) in selected_ids]
@@ -688,110 +688,239 @@ def master_timetable_ui(user):
         st.warning("Select at least one subject StudyPod.")
         return
 
-    st.markdown("**How many total hours can you study each day?**")
-    st.caption("Enter your total study time across ALL selected subjects, not hours per subject.")
+    st.markdown("**Your total study hours available each day**")
+    st.caption("These are not per-subject hours. StudyPod will divide this single daily budget among the selected subjects. You can enter a different number for every weekday.")
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    defaults = [2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0]
+    defaults = [3.0, 3.0, 3.0, 3.0, 3.0, 5.0, 5.0]
     hours = {}
     cols = st.columns(4)
     for index, day in enumerate(day_names):
         with cols[index % 4]:
             hours[day.lower()] = st.number_input(
-                day, min_value=0.0, max_value=12.0, value=defaults[index],
+                day, min_value=0.0, max_value=16.0, value=defaults[index],
                 step=0.5, key=f"master_hours_{day.lower()}",
             )
     total_weekly = sum(hours.values())
-    st.metric("Total study time per week", f"{total_weekly:g} hours")
-    if total_weekly < 7:
-        st.error("This is less than 7 hours per week. Your preparation may fall behind. Increase your available time if possible, while protecting sleep and essential commitments.")
-    elif total_weekly < 10.5:
-        st.warning("Your weekly study time is quite limited. If your school and tuition routine allows, consider adding 2–3 hours per week.")
+    st.metric("Total available study time per week", f"{total_weekly:g} hours")
+    if total_weekly <= 0:
+        st.warning("Enter at least some study time during the week.")
+    elif total_weekly < 14:
+        st.warning("Your weekly study time is limited for several subjects. The planner will still use your available time, but check whether the workload is realistic.")
 
-    st.markdown("**Subjects included**")
-    for pod in selected_pods:
-        st.write(f"• {pod['subject']} — {pod['name']} ({len(pod.get('chapters', []))} selected chapters)")
+    st.markdown("**Subjects and exam dates**")
+    for pod in sorted(selected_pods, key=lambda p: p["exam_date"]):
+        st.write(f"• **{pod['subject']}** — {len(p.get('chapters', []))} chapters · Exam {pod['exam_date']}")
 
-    if st.button("✨ Generate my combined timetable", type="primary", use_container_width=True):
+    st.info("The timetable uses three stages: learn and practise every selected chapter, then revise it, then do a final recall/test. It rotates subjects so you do not have to study every subject every day. Some days may focus on only one or two subjects.")
+
+    if st.button("✨ Generate my intelligent combined timetable", type="primary", use_container_width=True):
         if total_weekly <= 0:
             st.error("Please enter at least some study time.")
             return
-        exam_dates = [date.fromisoformat(p["exam_date"]) for p in selected_pods]
-        last_exam = max(exam_dates)
-        days_count = min((last_exam - date.today()).days + 1, 180)
-        if days_count <= 0:
-            st.error("The selected StudyPods have exam dates in the past. Update their exam dates or create new plans.")
-            return
 
-        queues = []
+        today = date.today()
+        valid_pods = []
         for pod in selected_pods:
-            chapters = list(pod.get("chapters", []))
-            if chapters:
-                for chapter in chapters:
-                    queues.append({
-                        "pod_id": str(pod["_id"]),
-                        "pod_name": pod["name"],
-                        "subject": pod["subject"],
-                        "chapter": chapter,
-                        "exam_date": pod["exam_date"],
-                        "done": False,
-                    })
-        if not queues:
-            st.error("The selected StudyPods do not contain any chapters.")
+            try:
+                exam_day = date.fromisoformat(pod["exam_date"])
+            except (ValueError, TypeError):
+                continue
+            if exam_day >= today and pod.get("chapters"):
+                valid_pods.append((pod, exam_day))
+        if not valid_pods:
+            st.error("The selected StudyPods have no future exam dates or no selected chapters.")
             return
 
-        # Interleave subjects so the same subject is not assigned every day.
-        queues.sort(key=lambda item: (item["exam_date"], item["subject"], item["chapter"]))
-        schedule = []
-        cursor = date.today()
-        task_index = 0
-        while cursor <= last_exam and len(schedule) < 180:
-            capacity = float(hours.get(cursor.strftime("%A").lower(), 0))
-            tasks = []
-            remaining = capacity
-            guard = 0
-            while remaining >= 0.5 and guard < len(queues):
-                task = dict(queues[task_index % len(queues)])
-                task_hours = min(1.0, remaining)
-                task["hours"] = round(task_hours, 2)
-                tasks.append(task)
-                remaining = round(remaining - task_hours, 2)
-                task_index += 1
-                guard += 1
-            schedule.append({
-                "date": cursor.isoformat(),
-                "day": cursor.strftime("%A"),
+        last_exam = max(exam_day for _, exam_day in valid_pods)
+        days_count = min((last_exam - today).days + 1, 365)
+        if (last_exam - today).days + 1 > 365:
+            st.warning("For now, the timetable is limited to the next 365 days.")
+        if days_count <= 0:
+            st.error("The selected exams are in the past. Update the exam dates in your StudyPods.")
+            return
+
+        # Build three distinct rounds rather than repeating the same chapter list:
+        # core learning + practice, spaced revision, and final recall/test.
+        chapter_items = []
+        for pod, exam_day in valid_pods:
+            for chapter in pod.get("chapters", []):
+                chapter_items.append({
+                    "pod_id": str(pod["_id"]),
+                    "pod_name": pod["name"],
+                    "subject": pod["subject"],
+                    "chapter": str(chapter),
+                    "exam_date": exam_day.isoformat(),
+                })
+        if not chapter_items:
+            st.error("No chapters were found in the selected StudyPods.")
+            return
+
+        # Earlier exams receive priority, while subject rotation avoids long runs
+        # of the same subject. Stable order makes regeneration predictable.
+        chapter_items.sort(key=lambda x: (x["exam_date"], x["subject"], x["chapter"]))
+        subject_order = []
+        for item in chapter_items:
+            if item["subject"] not in subject_order:
+                subject_order.append(item["subject"])
+        by_subject = {
+            subject: [item for item in chapter_items if item["subject"] == subject]
+            for subject in subject_order
+        }
+
+        # Each chapter receives two focused core sessions and two revision sessions.
+        # Core work is placed in the first 60% of the available calendar;
+        # revision 1 in the next 22%; final recall/test in the final 18%.
+        total_days = days_count
+        core_end = max(1, int(total_days * 0.60))
+        revision_end = max(core_end + 1, int(total_days * 0.82))
+        revision_end = min(total_days, revision_end)
+
+        daily_rows = []
+        for offset in range(total_days):
+            current = today + timedelta(days=offset)
+            capacity = float(hours.get(current.strftime("%A").lower(), 0))
+            daily_rows.append({
+                "date": current.isoformat(),
+                "day": current.strftime("%A"),
                 "capacity": capacity,
-                "tasks": tasks,
+                "tasks": [],
             })
-            cursor += timedelta(days=1)
+
+        def round_robin_items(items):
+            grouped = {s: list(by_subject[s]) for s in subject_order}
+            result = []
+            while any(grouped.values()):
+                for subject in subject_order:
+                    if grouped[subject]:
+                        result.append(grouped[subject].pop(0))
+            return result
+
+        ordered_chapters = round_robin_items(chapter_items)
+
+        def place_sessions(items, start_idx, end_idx, phase, session_hours, description):
+            # Spread sessions across the phase window and fill each day's available
+            # time in half-hour blocks. No subject can consume more than the total cap.
+            if end_idx <= start_idx:
+                return 0
+            session_queue = []
+            for item in items:
+                session_queue.append({**item, "phase": phase, "focus": description, "hours": session_hours, "done": False})
+            if not session_queue:
+                return 0
+            cursor_idx = start_idx
+            remaining = session_queue
+            # One session per chapter per pass, rotating through subjects.
+            while remaining and cursor_idx < end_idx:
+                progressed = False
+                for row_idx in range(cursor_idx, end_idx):
+                    row = daily_rows[row_idx]
+                    used = sum(float(t["hours"]) for t in row["tasks"])
+                    spare = round(float(row["capacity"]) - used, 2)
+                    if spare >= session_hours and remaining:
+                        task = remaining.pop(0)
+                        row["tasks"].append(task)
+                        progressed = True
+                if not remaining:
+                    break
+                if not progressed:
+                    break
+                cursor_idx = min(end_idx, cursor_idx + 1)
+            return len(remaining)
+
+        # Sessions are assigned in a controlled sequence. If the selected capacity
+        # is insufficient, the app reports the remaining work rather than silently
+        # dropping it or repeating chapters.
+        core_items = []
+        for item in ordered_chapters:
+            core_items.extend([
+                {**item, "session_label": "Learn / understand"},
+                {**item, "session_label": "Solve questions / practise"},
+            ])
+        rev1_items = [{**item, "session_label": "Revision 1 — active recall"} for item in ordered_chapters]
+        rev2_items = [{**item, "session_label": "Final revision — timed questions"} for item in ordered_chapters]
+
+        # Allocate the core stage, then revision stages. Session sizes are 1 hour
+        # for core work and 30 minutes for each revision round.
+        core_queue = []
+        for item in core_items:
+            core_queue.append({**item, "phase": "Core", "focus": item["session_label"], "hours": 1.0, "done": False})
+        rev1_queue = [
+            {**item, "phase": "Revision 1", "focus": item["session_label"], "hours": 0.5, "done": False}
+            for item in rev1_items
+        ]
+        rev2_queue = [
+            {**item, "phase": "Final revision", "focus": item["session_label"], "hours": 0.5, "done": False}
+            for item in rev2_items
+        ]
+
+        def allocate_queue(queue, first_day, last_day):
+            pending = list(queue)
+            for row_idx in range(first_day, min(last_day, len(daily_rows))):
+                row = daily_rows[row_idx]
+                used = sum(float(t["hours"]) for t in row["tasks"])
+                spare = round(float(row["capacity"]) - used, 2)
+                while pending and spare >= 0.5:
+                    # Prefer a task that fits; preserve the queue's subject rotation.
+                    fit_index = next((i for i, task in enumerate(pending) if float(task["hours"]) <= spare), None)
+                    if fit_index is None:
+                        break
+                    task = pending.pop(fit_index)
+                    row["tasks"].append(task)
+                    spare = round(spare - float(task["hours"]), 2)
+            return pending
+
+        pending_core = allocate_queue(core_queue, 0, core_end)
+        pending_rev1 = allocate_queue(rev1_queue, core_end, revision_end)
+        pending_rev2 = allocate_queue(rev2_queue, revision_end, total_days)
+
+        # Use any remaining free time for mixed-subject practice and exam preparation.
+        # This is explicitly labelled as consolidation, not falsely assigned to a chapter.
+        for row in daily_rows:
+            used = sum(float(t["hours"]) for t in row["tasks"])
+            spare = round(float(row["capacity"]) - used, 2)
+            while spare >= 1.0:
+                row["tasks"].append({
+                    "pod_id": "", "pod_name": "All selected subjects",
+                    "subject": "Mixed practice", "chapter": "Mixed-subject practice / mock test / error-log review",
+                    "exam_date": last_exam.isoformat(), "phase": "Consolidation",
+                    "focus": "Solve mixed questions, review mistakes, or take a timed mini-test",
+                    "hours": 1.0, "done": False,
+                })
+                spare = round(spare - 1.0, 2)
 
         db.save_master_timetable(user["username"], {
-            "pod_ids": selected_ids,
+            "pod_ids": [str(p["_id"]) for p, _ in valid_pods],
             "hours": hours,
-            "schedule": schedule,
+            "schedule": daily_rows,
             "last_exam": last_exam.isoformat(),
+            "pending_core_sessions": len(pending_core),
+            "pending_revision1_sessions": len(pending_rev1),
+            "pending_revision2_sessions": len(pending_rev2),
         })
-        st.success("Your combined timetable has been generated and saved.")
+        total_pending = len(pending_core) + len(pending_rev1) + len(pending_rev2)
+        if total_pending:
+            st.warning(f"Timetable saved, but {total_pending} chapter sessions could not fit into the selected date windows and daily hours. Review the workload or increase available time where practical.")
+        else:
+            st.success("Your combined timetable has been generated with chapter learning, practice and two revision rounds.")
         st.rerun()
 
     saved = db.get_master_timetable(user["username"])
     if saved and saved.get("schedule"):
-        saved_ids = set(saved.get("pod_ids", []))
-        current_ids = set(selected_ids)
-        if saved_ids != current_ids:
-            st.info("Your saved timetable uses a different subject selection. Generate again to apply the current selection.")
+        if set(saved.get("pod_ids", [])) != set(selected_ids) or saved.get("hours", {}) != hours:
+            st.info("Your saved timetable uses different subjects or daily hours. Generate again to apply your current selections.")
         st.markdown("---")
         st.markdown("### Your day-wise study timetable")
-        st.caption(f"Through {saved.get('last_exam', '')}. Each day's hours are the total across your selected subjects.")
+        st.caption(f"Through {saved.get('last_exam', '')}. All subject sessions share the daily total-hour budget.")
         for day in saved["schedule"]:
             with st.container(border=True):
                 st.markdown(f"**{day['day']} · {day['date']}**")
-                st.caption(f"Total planned study time: {day['capacity']:g} hours")
+                st.caption(f"Planned: {sum(float(t.get('hours', 0) or 0) for t in day.get('tasks', [])):g} / {float(day.get('capacity', 0) or 0):g} hours")
                 if not day.get("tasks"):
                     st.write("Rest / no study time entered.")
                 for task_index, task in enumerate(day.get("tasks", [])):
+                    title = f"{task['subject']} — {task['chapter']} · {task.get('focus', task.get('phase', 'Study'))} ({task['hours']:g} h)"
                     done = st.checkbox(
-                        f"{task['subject']} — {task['chapter']} ({task['hours']:g} h)",
+                        title,
                         value=bool(task.get("done", False)),
                         key=f"master_done_{day['date']}_{task_index}",
                     )
@@ -802,9 +931,19 @@ def master_timetable_ui(user):
                         "hours": saved.get("hours", {}),
                         "schedule": saved["schedule"],
                         "last_exam": saved.get("last_exam", ""),
+                        "pending_core_sessions": saved.get("pending_core_sessions", 0),
+                        "pending_revision1_sessions": saved.get("pending_revision1_sessions", 0),
+                        "pending_revision2_sessions": saved.get("pending_revision2_sessions", 0),
                     })
                     st.success("Daily progress saved.")
                     st.rerun()
+        pending = (
+            int(saved.get("pending_core_sessions", 0))
+            + int(saved.get("pending_revision1_sessions", 0))
+            + int(saved.get("pending_revision2_sessions", 0))
+        )
+        if pending:
+            st.warning(f"{pending} chapter sessions remain unallocated because the current date windows and available hours were not enough. Consider adding study hours or adjusting the exam plan.")
 
 def main():
     st.markdown('<div class="hero"><h1>📚 StudyPod</h1><p>Small groups. Smart sprints. Shared accountability.</p></div>', unsafe_allow_html=True)
