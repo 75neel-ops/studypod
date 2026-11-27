@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import secrets
 from datetime import date, timedelta
 from urllib.parse import quote
@@ -403,6 +404,27 @@ def practice_questions(subject: str, chapters: list[str], board: str, class_name
     return "\n".join([f"{i+1}. Write a clear explanation and solve one board-style problem from **{topic}**." for i, topic in enumerate(chapters[:8])])
 
 
+def parse_gemini_json(text: str) -> dict:
+    """Parse model JSON defensively, including LaTeX backslashes in answer strings."""
+    raw = (text or "").strip()
+    raw = re.sub(r"^\`\`\`(?:json)?\\s*", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\\s*\`\`\`$", "", raw)
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("The AI response did not contain a JSON object. Please generate the quiz again.")
+    raw = raw[start:end + 1]
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as first_error:
+        # JSON only permits a small set of backslash escapes. Escape stray
+        # LaTeX/math backslashes (for example \\theta) before retrying.
+        repaired = re.sub(r'\\\\(?!["\\\\/bfnrtu])', r'\\\\\\\\', raw)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            raise ValueError(f"The AI returned malformed quiz data ({first_error.msg}). Please generate a fresh quiz.")
+
+
 def create_chapter_quiz(subject: str, chapter: str, board: str, class_name: str, nonce: str) -> dict:
     """Create a fresh five-question quiz; never reveal answers before submission."""
     cfg = secret_section("gemini")
@@ -425,10 +447,11 @@ Return valid JSON only with this exact shape:
 ]}}
 Use age-appropriate syllabus-level questions. Numerical questions must contain all needed data.
 Make each question distinct. Do not include answers outside the JSON fields.
+IMPORTANT: Do not use backslash characters or LaTeX notation in any string. Write equations in plain text so the JSON is valid.
 """
     response = client.models.generate_content(model=model, contents=prompt)
     raw = (response.text or "").strip().replace("```json", "").replace("```", "").strip()
-    data = json.loads(raw)
+    data = parse_gemini_json(raw)
     questions = data.get("questions", [])
     if len(questions) != 5:
         raise ValueError("The quiz generator did not return exactly five questions.")
@@ -466,7 +489,7 @@ Student responses and reference answers:
 """
     response = client.models.generate_content(model=model, contents=prompt)
     raw = (response.text or "").strip().replace("```json", "").replace("```", "").strip()
-    result = json.loads(raw)
+    result = parse_gemini_json(raw)
     result["score"] = max(0, min(10, float(result.get("score", 0))))
     result["max_score"] = 10
     return result
