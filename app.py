@@ -597,9 +597,11 @@ def master_timetable_ui(user):
             )
     weekly_hours = sum(hours.values())
     st.metric("Total available hours per week", f"{weekly_hours:g} h")
+    prior_master = db.get_master_timetable(user["username"]) or {}
+    imported_subjects = [item.get("subject", "") for item in prior_master.get("imported_exams", []) if item.get("subject")]
     weak_subjects = st.multiselect(
         "Which subjects are you weak in? (StudyPod will give these extra time)",
-        options=sorted(set(p["subject"] for p in selected_pods)),
+        options=sorted(set([p["subject"] for p in selected_pods] + imported_subjects)),
         key="master_weak_subjects",
         help="Choose honestly. Weak subjects receive extra practice and revision sessions.",
     )
@@ -909,7 +911,10 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                         if day["date"] <= today_text:
                             completed_past.append((day["date"], dict(task)))
                     else:
-                        unfinished.append(dict(task))
+                        pending_task = dict(task)
+                        old_target = pending_task.get("target_date", pending_task.get("due_date", today_text))
+                        pending_task["target_date"] = max(today_text, old_target)
+                        unfinished.append(pending_task)
             remaining_rows = [{
                 "date": (date.today() + timedelta(days=i)).isoformat(),
                 "day": (date.today() + timedelta(days=i)).strftime("%A"),
