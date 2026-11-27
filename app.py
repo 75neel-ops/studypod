@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from urllib.parse import quote
 
 import streamlit as st
+import pandas as pd
 import streamlit.components.v1 as components
 from bson import ObjectId
 
@@ -1203,8 +1204,12 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                         history = list(saved.get("quiz_history", []))
                         history.append({
                             "subject": chosen["subject"], "chapter": chosen["chapter"],
-                            "score": result["score"], "max_score": 10,
+                            "score": float(result.get("score", 0)), "max_score": 10,
                             "difficulty_areas": result.get("difficulty_areas", []),
+                            "strengths": result.get("strengths", []),
+                            "study_suggestions": result.get("study_suggestions", []),
+                            "overall_feedback": result.get("overall_feedback", ""),
+                            "question_feedback": result.get("question_feedback", []),
                             "taken_at": db.utcnow(),
                         })
                         db.save_master_timetable(user["username"], {"quiz_history": history[-30:]})
@@ -1274,6 +1279,73 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                     st.session_state.pop("daily_chapter_quiz", None)
                     st.session_state.pop("daily_chapter_quiz_result", None)
                     st.rerun()
+
+    st.markdown("---")
+    if st.button("📈 View student learning progress", key="show_learning_progress", use_container_width=True):
+        st.session_state.show_learning_progress = True
+    if st.session_state.get("show_learning_progress"):
+        st.markdown("### 📊 Learning progress report")
+        st.caption("A chapter-wise record of submitted AI quizzes, scores and learning gaps. Students can share this screen with parents.")
+        progress_history = list((db.get_master_timetable(user["username"]) or {}).get("quiz_history", []))
+        if not progress_history:
+            st.info("No quiz results have been saved yet. Complete and submit a chapter quiz to start the progress record.")
+        else:
+            valid_history = [item for item in progress_history if item.get("subject") and item.get("chapter")]
+            chapter_options = sorted({f"{item['subject']} — {item['chapter']}" for item in valid_history})
+            selected_progress_chapter = st.selectbox("View progress for a chapter", ["All chapters"] + chapter_options, key="progress_chapter_filter")
+            filtered_history = valid_history
+            if selected_progress_chapter != "All chapters":
+                selected_subject, selected_chapter = selected_progress_chapter.split(" — ", 1)
+                filtered_history = [item for item in valid_history if item.get("subject") == selected_subject and item.get("chapter") == selected_chapter]
+            def progress_sort_key(item):
+                stamp = item.get("taken_at")
+                if hasattr(stamp, "timestamp"):
+                    return stamp.timestamp()
+                return str(stamp or "")
+            filtered_history.sort(key=progress_sort_key)
+            scores = [float(item.get("score", 0) or 0) for item in filtered_history]
+            first_score, latest_score = scores[0], scores[-1]
+            improvement = latest_score - first_score
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Quizzes completed", len(filtered_history))
+            m2.metric("Latest score", f"{latest_score:g} / 10")
+            m3.metric("Change since first quiz", f"{improvement:+g} marks")
+            chart_rows = []
+            for index, item in enumerate(filtered_history, 1):
+                stamp = item.get("taken_at")
+                if hasattr(stamp, "strftime"):
+                    label = stamp.strftime("%d %b %Y %H:%M")
+                else:
+                    label = str(stamp or f"Attempt {index}")
+                chart_rows.append({"Attempt": f"{index}. {label}", "Score": float(item.get("score", 0) or 0)})
+            st.markdown("**Score history**")
+            st.line_chart(pd.DataFrame(chart_rows).set_index("Attempt"), y="Score")
+            st.markdown("**Attempt-by-attempt feedback**")
+            for index, item in enumerate(reversed(filtered_history), 1):
+                stamp = item.get("taken_at")
+                stamp_label = stamp.strftime("%d %b %Y, %I:%M %p") if hasattr(stamp, "strftime") else str(stamp or "Date unavailable")
+                with st.expander(f"{stamp_label} · {float(item.get('score', 0) or 0):g}/10 · {item.get('subject')} — {item.get('chapter')}"):
+                    if item.get("overall_feedback"):
+                        st.write(item["overall_feedback"])
+                    if item.get("strengths"):
+                        st.markdown("**Strengths**")
+                        for strength in item["strengths"]:
+                            st.write(f"• {strength}")
+                    if item.get("difficulty_areas"):
+                        st.markdown("**Areas to improve**")
+                        for gap in item["difficulty_areas"]:
+                            st.write(f"• {gap}")
+                    if item.get("study_suggestions"):
+                        st.markdown("**Recommended next steps**")
+                        for suggestion in item["study_suggestions"]:
+                            st.write(f"• {suggestion}")
+                    if item.get("question_feedback"):
+                        st.markdown("**Question feedback**")
+                        for feedback in item["question_feedback"]:
+                            st.write(f"• Q{feedback.get('number', '?')}: {feedback.get('score', 0)}/2 — {feedback.get('feedback', '')}")
+        if st.button("Hide learning progress", key="hide_learning_progress"):
+            st.session_state.show_learning_progress = False
+            st.rerun()
 
 def main():
     st.markdown('<div class="hero"><h1>📚 StudyPod</h1><p>Small groups. Smart sprints. Shared accountability.</p></div>', unsafe_allow_html=True)
