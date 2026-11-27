@@ -1281,9 +1281,9 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                     st.rerun()
 
     st.markdown("---")
-    if st.button("📈 View student learning progress", key="show_learning_progress", use_container_width=True):
-        st.session_state.show_learning_progress = True
-    if st.session_state.get("show_learning_progress"):
+    if st.button("📈 View student learning progress", key="open_learning_progress_report", use_container_width=True):
+        st.session_state.learning_progress_visible = True
+    if st.session_state.get("learning_progress_visible", False):
         st.markdown("### 📊 Learning progress report")
         st.caption("A chapter-wise record of submitted AI quizzes, scores and learning gaps. Students can share this screen with parents.")
         progress_history = list((db.get_master_timetable(user["username"]) or {}).get("quiz_history", []))
@@ -1343,8 +1343,8 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                         st.markdown("**Question feedback**")
                         for feedback in item["question_feedback"]:
                             st.write(f"• Q{feedback.get('number', '?')}: {feedback.get('score', 0)}/2 — {feedback.get('feedback', '')}")
-        if st.button("Hide learning progress", key="hide_learning_progress"):
-            st.session_state.show_learning_progress = False
+        if st.button("Hide learning progress", key="close_learning_progress_report"):
+            st.session_state.learning_progress_visible = False
             st.rerun()
 
 def main():
