@@ -1119,6 +1119,136 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
     if saved.get("pending_sessions"):
         st.warning(f"{len(saved['pending_sessions'])} sessions are not currently scheduled because the available hours before deadlines are insufficient.")
 
+    st.markdown("---")
+    st.markdown("## 🧠 Daily Proof of Learning")
+    st.caption("No notebook uploads. After a chapter is marked complete and progress is saved, the student takes a fresh five-question quiz. StudyPod evaluates the answers, identifies gaps and recommends focused revision.")
+    completed_chapters = {}
+    for day in schedule:
+        for task in day.get("tasks", []):
+            chapter = task.get("chapter") or task.get("title", "")
+            if task.get("done") and chapter and task.get("kind") in ("Exam", "Daily study", "Targeted revision"):
+                key = f"{task.get('subject', 'Subject')} — {chapter}"
+                completed_chapters[key] = {
+                    "subject": task.get("subject", "Subject"),
+                    "chapter": chapter,
+                }
+    if not completed_chapters:
+        st.info("First tick a chapter study task as completed in your timetable and click **Save progress**. It will then appear here for a quiz.")
+    else:
+        quiz_choice = st.selectbox("Choose a finished chapter to test", sorted(completed_chapters), key="daily_quiz_chapter")
+        chosen = completed_chapters[quiz_choice]
+        pod_context = next((p for p in selected_pods if p.get("subject") == chosen["subject"]), None)
+        if pod_context is None:
+            all_user_pods = db.get_user_pods(user["username"])
+            pod_context = next((p for p in all_user_pods if p.get("subject") == chosen["subject"]), {})
+        quiz_class = (pod_context or {}).get("class_name", "Class 10")
+        quiz_board = (pod_context or {}).get("board", "CBSE")
+
+        if st.button("🎯 Generate a new 5-question quiz", key="generate_daily_chapter_quiz", type="primary"):
+            with st.spinner("Creating five new questions for this chapter..."):
+                try:
+                    fresh_quiz = create_chapter_quiz(
+                        chosen["subject"], chosen["chapter"], quiz_board, quiz_class, secrets.token_hex(8)
+                    )
+                    st.session_state.daily_chapter_quiz = fresh_quiz
+                    st.session_state.daily_chapter_quiz_id = secrets.token_hex(5)
+                    st.session_state.pop("daily_chapter_quiz_result", None)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not create the quiz: {str(exc)[:220]}")
+
+        active_quiz = st.session_state.get("daily_chapter_quiz")
+        if active_quiz and active_quiz.get("subject") == chosen["subject"] and active_quiz.get("chapter") == chosen["chapter"]:
+            quiz_id = st.session_state.get("daily_chapter_quiz_id", "new")
+            st.caption("Answer all five questions. Each question is worth 2 marks. Answers are evaluated after submission.")
+            with st.form(f"daily_chapter_quiz_form_{quiz_id}"):
+                quiz_answers = []
+                for q_index, question in enumerate(active_quiz["questions"], 1):
+                    st.markdown(f"**Q{q_index}. ({question.get('type', 'Question')})** {question.get('question', '')}")
+                    quiz_answers.append(st.text_area(
+                        f"Your answer to question {q_index}", key=f"daily_quiz_{quiz_id}_{q_index}", height=90
+                    ))
+                submitted_quiz = st.form_submit_button("Submit answers for AI evaluation", type="primary", use_container_width=True)
+            if submitted_quiz:
+                with st.spinner("Evaluating your answers and identifying learning gaps..."):
+                    try:
+                        result = evaluate_chapter_quiz(active_quiz, quiz_answers, quiz_class, quiz_board)
+                        st.session_state.daily_chapter_quiz_result = result
+                        history = list(saved.get("quiz_history", []))
+                        history.append({
+                            "subject": chosen["subject"], "chapter": chosen["chapter"],
+                            "score": result["score"], "max_score": 10,
+                            "difficulty_areas": result.get("difficulty_areas", []),
+                            "taken_at": db.utcnow(),
+                        })
+                        db.save_master_timetable(user["username"], {"quiz_history": history[-30:]})
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Evaluation could not be completed: {str(exc)[:220]}")
+
+            result = st.session_state.get("daily_chapter_quiz_result")
+            if result:
+                st.metric("Quiz result", f"{result.get('score', 0):g} / 10")
+                st.write(result.get("overall_feedback", ""))
+                if result.get("strengths"):
+                    st.markdown("**What you understand well**")
+                    for item in result["strengths"]:
+                        st.write(f"• {item}")
+                if result.get("question_feedback"):
+                    st.markdown("**Answer-by-answer feedback**")
+                    for item in result["question_feedback"]:
+                        st.write(f"**Q{item.get('number')}: {item.get('score', 0)}/2** — {item.get('feedback', '')}")
+                gaps = result.get("difficulty_areas", [])
+                suggestions = result.get("study_suggestions", [])
+                if gaps:
+                    st.markdown("**Parts that need more work**")
+                    for gap in gaps:
+                        st.write(f"• {gap}")
+                        search_term = quote(f"{quiz_class} {quiz_board} {chosen['subject']} {chosen['chapter']} {gap} explanation")
+                        st.link_button(f"▶ Find a lesson on: {gap}", f"https://www.youtube.com/results?search_query={search_term}")
+                if suggestions:
+                    st.markdown("**Recommended study actions**")
+                    for suggestion in suggestions:
+                        st.write(f"• {suggestion}")
+                if gaps or suggestions:
+                    if st.button("📅 Add improvement time to my timetable", key="add_quiz_remediation"):
+                        latest_saved = db.get_master_timetable(user["username"]) or {}
+                        revised_schedule = latest_saved.get("schedule", [])
+                        topics = (gaps or suggestions)[:3]
+                        added = 0
+                        for topic_index, topic in enumerate(topics):
+                            candidates = []
+                            for day in revised_schedule:
+                                if day.get("date", "") <= date.today().isoformat():
+                                    continue
+                                capacity = float(day.get("capacity", 0) or 0)
+                                used = sum(float(t.get("hours", 0) or 0) for t in day.get("tasks", []))
+                                if capacity - used >= 0.5:
+                                    candidates.append((used / capacity if capacity else 1, day["date"], day))
+                            if not candidates:
+                                continue
+                            _, target_date, target_day = min(candidates, key=lambda x: (x[0], x[1]))
+                            target_day.setdefault("tasks", []).append({
+                                "id": secrets.token_hex(8), "kind": "Targeted revision",
+                                "subject": chosen["subject"], "chapter": chosen["chapter"],
+                                "title": str(topic)[:120], "phase": "Review weak area and practise",
+                                "hours": 1.0, "target_date": target_date,
+                                "due_date": active_quiz.get("created_at", db.utcnow()).date().isoformat()
+                                    if hasattr(active_quiz.get("created_at", None), "date") else target_date,
+                                "done": False,
+                            })
+                            added += 1
+                        db.save_master_timetable(user["username"], {"schedule": revised_schedule})
+                        if added:
+                            st.success(f"Added {added} one-hour improvement session(s). After completing them, generate a fresh quiz to check progress.")
+                            st.rerun()
+                        else:
+                            st.warning("There is no free time in the future timetable. Rearrange the timetable or increase available hours first.")
+                if st.button("Create a different quiz for this chapter", key="new_quiz_after_result"):
+                    st.session_state.pop("daily_chapter_quiz", None)
+                    st.session_state.pop("daily_chapter_quiz_result", None)
+                    st.rerun()
+
 def main():
     st.markdown('<div class="hero"><h1>📚 StudyPod</h1><p>Small groups. Smart sprints. Shared accountability.</p></div>', unsafe_allow_html=True)
     if not require_login():
