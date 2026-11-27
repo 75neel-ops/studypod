@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import html
 import re
 import secrets
 from datetime import date, timedelta
@@ -1306,10 +1307,43 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
             scores = [float(item.get("score", 0) or 0) for item in filtered_history]
             first_score, latest_score = scores[0], scores[-1]
             improvement = latest_score - first_score
-            m1, m2, m3 = st.columns(3)
+            recent_scores = scores[-3:]
+            if len(recent_scores) == 1:
+                trend_label = "Not enough attempts yet"
+                trend_help = "Complete at least two quizzes to establish a learning trend."
+            elif recent_scores[-1] - recent_scores[0] >= 1:
+                trend_label = "Improving"
+                trend_help = "Recent quiz performance is moving upward."
+            elif recent_scores[-1] - recent_scores[0] <= -1:
+                trend_label = "Needs attention"
+                trend_help = "Recent scores have declined. Review the identified learning gaps."
+            else:
+                trend_label = "Stable"
+                trend_help = "Recent scores are broadly consistent."
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric("Quizzes completed", len(filtered_history))
             m2.metric("Latest score", f"{latest_score:g} / 10")
             m3.metric("Change since first quiz", f"{improvement:+g} marks")
+            m4.metric("Learning trend", trend_label)
+            st.caption(trend_help)
+
+            st.markdown("### Subject-wise performance")
+            subject_rows = []
+            for subject_name in sorted({item.get("subject", "Subject") for item in valid_history}):
+                subject_items = sorted(
+                    [item for item in valid_history if item.get("subject", "Subject") == subject_name],
+                    key=progress_sort_key,
+                )
+                subject_scores = [float(item.get("score", 0) or 0) for item in subject_items]
+                subject_rows.append({
+                    "Subject": subject_name,
+                    "Quizzes": len(subject_items),
+                    "Average (/10)": round(sum(subject_scores) / len(subject_scores), 1),
+                    "Latest (/10)": round(subject_scores[-1], 1),
+                    "First to latest": f"{subject_scores[-1] - subject_scores[0]:+g}",
+                })
+            st.dataframe(pd.DataFrame(subject_rows), use_container_width=True, hide_index=True)
+
             chart_rows = []
             for index, item in enumerate(filtered_history, 1):
                 stamp = item.get("taken_at")
@@ -1320,6 +1354,44 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
                 chart_rows.append({"Attempt": f"{index}. {label}", "Score": float(item.get("score", 0) or 0)})
             st.markdown("**Score history**")
             st.line_chart(pd.DataFrame(chart_rows).set_index("Attempt"), y="Score")
+
+            # Build a self-contained, print-friendly parent report. The HTML can
+            # be opened in a browser and printed or saved as PDF.
+            def report_text(value):
+                return html.escape(str(value or ""))
+            report_lines = [
+                "<!doctype html><html><head><meta charset='utf-8'><title>StudyPod Learning Progress Report</title>",
+                "<style>body{font:15px Arial,sans-serif;max-width:900px;margin:35px auto;padding:0 24px;color:#172033}h1,h2{color:#253b80}table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid #ccd2df;padding:9px;text-align:left}th{background:#eef1fa}.muted{color:#596579}.score{font-size:22px;font-weight:bold}@media print{body{margin:12mm;max-width:none}.no-print{display:none}}</style></head><body>",
+                "<div class='no-print'><button onclick='window.print()'>Print / Save as PDF</button></div>",
+                "<h1>StudyPod — Student Learning Progress</h1>",
+                f"<p class='muted'>Student: {report_text(user.get('display_name', user.get('username', 'Student')))} · Generated: {report_text(datetime.now().strftime('%d %b %Y, %I:%M %p'))}</p>",
+                f"<h2>Overview: {report_text(selected_progress_chapter)}</h2>",
+                f"<p class='score'>Latest: {latest_score:g}/10 · Change since first quiz: {improvement:+g} · Trend: {report_text(trend_label)}</p>",
+                "<h2>Subject-wise performance</h2><table><tr><th>Subject</th><th>Quizzes</th><th>Average</th><th>Latest</th><th>First to latest</th></tr>",
+            ]
+            for row in subject_rows:
+                report_lines.append("<tr>" + "".join(f"<td>{report_text(row[key])}</td>" for key in ("Subject", "Quizzes", "Average (/10)", "Latest (/10)", "First to latest")) + "</tr>")
+            report_lines.append("</table><h2>Quiz history and feedback</h2>")
+            for item in filtered_history:
+                stamp = item.get("taken_at")
+                stamp_label = stamp.strftime("%d %b %Y, %I:%M %p") if hasattr(stamp, "strftime") else str(stamp or "Date unavailable")
+                report_lines.append(f"<h3>{report_text(stamp_label)} · {float(item.get('score', 0) or 0):g}/10 · {report_text(item.get('subject'))} — {report_text(item.get('chapter'))}</h3>")
+                if item.get("overall_feedback"):
+                    report_lines.append(f"<p>{report_text(item['overall_feedback'])}</p>")
+                for heading, key in (("Strengths", "strengths"), ("Areas to improve", "difficulty_areas"), ("Recommended actions", "study_suggestions")):
+                    values = item.get(key, [])
+                    if values:
+                        report_lines.append(f"<b>{heading}</b><ul>" + "".join(f"<li>{report_text(value)}</li>" for value in values) + "</ul>")
+            report_lines.append("</body></html>")
+            st.download_button(
+                "🖨️ Download parent-friendly progress report",
+                data="\n".join(report_lines),
+                file_name="StudyPod_Learning_Progress_Report.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+            st.caption("Open the downloaded HTML report in a browser and choose Print → Save as PDF to keep or share a PDF copy.")
+
             st.markdown("**Attempt-by-attempt feedback**")
             for index, item in enumerate(reversed(filtered_history), 1):
                 stamp = item.get("taken_at")
