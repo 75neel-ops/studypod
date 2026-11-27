@@ -618,7 +618,13 @@ def master_timetable_ui(user):
         with st.form("master_add_assignment_form"):
             assignment_type = st.selectbox("Type", ["Project", "Homework"])
             assignment_title = st.text_input("Title")
-            assignment_subject = st.selectbox("Subject", sorted(set(p["subject"] for p in selected_pods)))
+            available_assignment_subjects = set()
+            for pod in selected_pods:
+                available_assignment_subjects.update(subjects_for(pod.get("class_name", "Class 10"), pod.get("board", "CBSE")))
+                available_assignment_subjects.add(pod.get("subject", ""))
+            available_assignment_subjects.update(item.get("subject", "") for item in prior_master.get("imported_exams", []) if item.get("subject"))
+            available_assignment_subjects.discard("")
+            assignment_subject = st.selectbox("Subject", sorted(available_assignment_subjects))
             assignment_due = st.date_input("Submission date", value=date.today() + timedelta(days=7), min_value=date.today())
             assignment_hours = st.number_input("Estimated work hours", min_value=0.5, max_value=100.0, value=2.0, step=0.5)
             add_assignment = st.form_submit_button("Add to my timetable")
@@ -720,6 +726,19 @@ Use an empty array when absent. Do not guess missing dates or subjects. Use null
         with st.expander("Review imported projects / homework"):
             for item in imported_assignments:
                 st.write(f"**{item['type']}: {item['title']}** — {item['subject']} · due {item['due_date']} · {item['estimated_hours']:g} h")
+
+    # Preview every deadline item before generation so missing selection or saved data is visible.
+    preview_assignments = []
+    for pod in selected_pods:
+        preview_assignments.extend({**item, "_source": f"StudyPod: {pod.get('name', 'Unnamed')}"} for item in pod.get("projects", []) + pod.get("homeworks", []))
+    preview_assignments.extend({**item, "_source": "Master timetable"} for item in saved.get("extra_assignments", []))
+    preview_assignments.extend({**item, "_source": "Uploaded routine"} for item in imported_assignments)
+    st.markdown("### Projects and homework included")
+    if preview_assignments:
+        for item in preview_assignments:
+            st.write(f"• **{item.get('type', 'Homework')}: {item.get('title', 'Untitled')}** — {item.get('subject', 'General')} · due {item.get('due_date', 'date missing')} · {float(item.get('estimated_hours', 1) or 1):g} h · {item.get('_source', '')}")
+    else:
+        st.warning("No project or homework is currently saved for the selected StudyPods. Add it above or open Create a pod and save it there. Only tasks from selected StudyPods are included.")
 
     st.info("The timetable is generated in stages: chapter learning and practice first, then spaced revision and final revision. Weak subjects receive extra practice. Projects and homework are scheduled before their submission dates. You will see the next 7 days first.")
 
